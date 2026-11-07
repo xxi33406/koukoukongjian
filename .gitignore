@@ -1,0 +1,78 @@
+# ============================================================
+# koukoukongjian —— Go 权威服务器 + Unity 客户端（单仓库）
+# ============================================================
+
+# ---------------- Go 编译产物 ----------------
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.a
+*.test
+*.out
+/bin/
+/build/
+/dist/
+# 覆盖率报告
+coverage.out
+*.coverprofile
+
+# ---------------- Go 工作区 / 依赖 ----------------
+# go.sum 必须入库；vendor 视情况，默认不入库
+vendor/
+# 多模块时的工作区文件（含本机绝对路径，不入库）
+go.work
+go.work.sum
+
+# ---------------- IDE / 编辑器 ----------------
+.idea/
+.vscode/
+*.iml
+*.swp
+*.swo
+*~
+*.sublime-workspace
+
+# ---------------- 操作系统 ----------------
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# ---------------- 日志 / 临时文件 ----------------
+*.log
+logs/
+tmp/
+.tmp/
+.cache/
+
+# ---------------- 本地配置 / 密钥（示例文件例外）----------------
+.env
+.env.*
+!.env.example
+*.local
+config.local.*
+
+# ---------------- Unity 客户端（预留，客户端工程落地后生效）----------------
+[Ll]ibrary/
+[Tt]emp/
+[Oo]bj/
+[Bb]uild/
+[Bb]uilds/
+[Ll]ogs/
+[Uu]ser[Ss]ettings/
+MemoryCaptures/
+*.csproj
+*.unityproj
+*.sln
+*.user
+*.userprefs
+*.pidb
+*.booproj
+*.svd
+*.pdb
+*.mdb
+*.opendb
+*.VC.db
+
+spec/
