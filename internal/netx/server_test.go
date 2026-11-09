@@ -60,6 +60,12 @@ func (c *recvCollector) handler() HandlerFuncs {
 	}
 }
 
+func (c *recvCollector) disconnCount() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.disconn)
+}
+
 func (c *recvCollector) reliableCount() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -336,14 +342,13 @@ func TestServerSessionTimeout(t *testing.T) {
 	waitFor(t, 2*time.Second, "会话建立", func() bool { return srv.SessionCount() == 1 })
 
 	// 停止发包，等超时。
-	waitFor(t, 3*time.Second, "会话被回收", func() bool { return srv.SessionCount() == 0 })
-
-	col.mu.Lock()
-	n := len(col.disconn)
-	col.mu.Unlock()
-	if n != 1 {
-		t.Fatalf("掉线回调 %d 次，期望 1", n)
-	}
+	//
+	// 必须等"会话被回收且掉线回调已发出"，不能只等 SessionCount()==0：
+	// dropSession 是先删表项、后回调，两个状态之间有窗口，只等前者会
+	// 在窗口内读到 0 次回调而误判失败。
+	waitFor(t, 3*time.Second, "会话被回收且回调完成", func() bool {
+		return srv.SessionCount() == 0 && col.disconnCount() == 1
+	})
 
 	// 掉线后客户端再发包应建立**新会话**，而不是复用旧状态。
 	sendReliable(t, conn, 0, []byte("again"))
@@ -526,5 +531,64 @@ func BenchmarkServerDispatch(b *testing.B) {
 		case <-s.out:
 		default:
 		}
+	}
+}
+
+// TestServerCloseWhileRunning 守住 Close 与 Run 并发退出的竞态。
+//
+// 曾经的缺陷：Close() 与 Run() 的退出分支都会调 shutdown()，两个
+// goroutine 同时遍历 sessions map、同时调 wg.Wait()，而另一处可能正好
+// 在 wg.Add()——WaitGroup 明令禁止 Add 与 Wait 并发，-race 会报，实际
+// 运行则可能丢会话或永久阻塞。修法是 shutdownOnce + closing 标志。
+//
+// 这个测试必须配 -race 才有意义：不带 race 时它只是"不 panic"。
+func TestServerCloseWhileRunning(t *testing.T) {
+	// 反复多次；竞态窗口很窄，单次很可能踩不到。
+	for i := 0; i < 30; i++ {
+		srv, err := Listen("127.0.0.1:0", DefaultServerConfig(), testLogger(), HandlerFuncs{})
+		if err != nil {
+			t.Fatalf("第 %d 轮启动失败：%v", i, err)
+		}
+
+		ctx, cancel := context.WithCancel(context.Background())
+		// t.Cleanup 而非 defer：Fatalf 走 Goexit 不跑 defer，
+		// 不显式注册会让 vet 报 context 泄漏。
+		t.Cleanup(cancel)
+		runDone := make(chan struct{})
+		go func() {
+			defer close(runDone)
+			srv.Run(ctx)
+		}()
+
+		// 让一些会话建立起来，Close 才有东西可清理。
+		cli, err := Dial(srv.LocalAddr().String(), DefaultClientConfig())
+		if err != nil {
+			cancel()
+			srv.Close()
+			<-runDone
+			t.Fatalf("第 %d 轮连接失败：%v", i, err)
+		}
+		cliCtx, cliCancel := context.WithCancel(ctx)
+		go cli.Run(cliCtx)
+		cli.Send([]byte("hi"))
+
+		// 三种退出方式混着来，尽量撞出竞态窗口。
+		switch i % 3 {
+		case 0:
+			// Close 与 ctx 取消几乎同时。
+			cancel()
+			srv.Close()
+		case 1:
+			srv.Close()
+			cancel()
+		case 2:
+			// 只 Close，让 Run 自己从读错误里退出。
+			srv.Close()
+			cancel()
+		}
+
+		cliCancel()
+		cli.Close()
+		<-runDone
 	}
 }

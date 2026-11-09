@@ -117,7 +117,19 @@ type Server struct {
 	nextID   atomic.Uint64
 
 	// wg 跟踪所有后台 goroutine（每个会话一个写 goroutine）。
+	//
+	// 危险点：wg.Add 与 wg.Wait 并发是 WaitGroup 的未定义行为，
+	// 而 Close() 可能由调用方 goroutine 触发、Run() 退出时也会调
+	// shutdown。两者撞上就是 Add 与 Wait 并发——用 shutdownOnce
+	// 保证只有第一个到达的能进清理，其余的等同一个结果。
 	wg sync.WaitGroup
+
+	// shutdownOnce 保证关闭路径只执行一次。
+	// Close() 与 Run() 的退出分支都会调 shutdown，谁先到谁负责清理。
+	shutdownOnce sync.Once
+	// closing 置位后 getOrCreateSession 不再建新会话，避免
+	// shutdown 遍历完 map 之后又有会话被塞进来而永远不被关闭。
+	closing atomic.Bool
 
 	// 统计
 	recvTotal  atomic.Uint64
@@ -264,6 +276,11 @@ func (s *Server) getOrCreateSession(addr *net.UDPAddr) *Session {
 	if sess := s.sessions[key]; sess != nil {
 		return sess
 	}
+	// 已经开始关闭了就别再建新会话：shutdown 可能已经把 map 遍历完，
+	// 之后塞进来的会话没人会去关，写 goroutine 就泄漏了。
+	if s.closing.Load() {
+		return nil
+	}
 	if len(s.sessions) >= s.cfg.MaxSessions {
 		s.dropNewSes.Add(1)
 		s.log.Warn("会话数已达上限，拒绝新连接", "from", key, "max", s.cfg.MaxSessions)
@@ -376,19 +393,28 @@ func (s *Server) dropSession(sess *Session, reason string) {
 	s.handle.OnDisconnect(sess, reason)
 }
 
+// shutdown 关闭所有会话并等待后台 goroutine 退出。
+//
+// 幂等：Close() 与 Run() 的退出分支都会调它，第二次调用直接返回。
+// 没有这层保护会踩两个坑：① dropSession 对同一会话重复回调
+// OnDisconnect；② wg.Wait 与别处的 wg.Add 并发（WaitGroup 明令禁止）。
 func (s *Server) shutdown(reason string) {
-	s.mu.RLock()
-	list := make([]*Session, 0, len(s.sessions))
-	for _, sess := range s.sessions {
-		list = append(list, sess)
-	}
-	s.mu.RUnlock()
+	s.shutdownOnce.Do(func() {
+		s.closing.Store(true)
 
-	for _, sess := range list {
-		s.dropSession(sess, reason)
-	}
-	// 等所有写 goroutine 排空退出。
-	s.wg.Wait()
+		s.mu.RLock()
+		list := make([]*Session, 0, len(s.sessions))
+		for _, sess := range s.sessions {
+			list = append(list, sess)
+		}
+		s.mu.RUnlock()
+
+		for _, sess := range list {
+			s.dropSession(sess, reason)
+		}
+		// 等所有写 goroutine 排空退出。
+		s.wg.Wait()
+	})
 }
 
 // Close 主动关闭服务端并等待所有 goroutine 退出。
