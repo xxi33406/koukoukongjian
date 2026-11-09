@@ -138,7 +138,9 @@ func TestMarshalUnmarshalHello(t *testing.T) {
 		t.Fatal(err)
 	}
 	if out.PlayerName != "翰" || out.Token != "tok-123" {
-		t.Fatalf("往返后内容不符：%+v", out)
+		// 必须传指针：protobuf 消息内含 sync.Mutex，按值传会复制锁
+		// （go vet 会直接报 copies lock value）。
+		t.Fatalf("往返后内容不符：name=%q token=%q", out.PlayerName, out.Token)
 	}
 }
 
