@@ -1,0 +1,24 @@
+# 统一行尾：仓库内文本一律 LF
+#
+# 背景：本机 core.autocrlf=true。它对 Windows 是合理的默认（checkout 转 CRLF、
+# 提交转回 LF），但 Go 生态不是——gofmt 在 CRLF 文件上会重写整个文件，于是
+# 每次 clone 后 `gofmt -l` 把所有文件都列一遍，看起来像没格式化过。
+# 显式声明比依赖每个人的全局配置可靠：CI、别人的机器、Docker 里行为一致。
+#
+# 注意：这条只影响 Git 的行为，不改变已 checkout 的文件，需要重新 checkout
+# 或 `git add --renormalize .` 才生效。
+
+* text=auto eol=lf
+
+# Windows 批处理必须是 CRLF，否则有些解析器会出错
+*.bat  text eol=crlf
+*.cmd  text eol=crlf
+*.ps1  text eol=crlf
+
+# 二进制：绝不做行尾转换
+*.exe   binary
+*.dll   binary
+*.png   binary
+*.jpg   binary
+*.zip   binary
+*.pdb   binary

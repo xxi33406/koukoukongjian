@@ -75,4 +75,17 @@ MemoryCaptures/
 *.opendb
 *.VC.db
 
+# ---------------- 开发文档：本地保留，不进远程仓库 ----------------
+# 策划案、技术设计、决策记录、调研笔记等一律忽略；
+# 需要共享时通过内部 wiki / 群文件 / PR 描述传递，不走 git 历史。
+docs/
 spec/
+*.md
+!README.md
+!AGENTS.md
+
+# ---------------- 本地开发草稿 ----------------
+scratch/
+.scratch/
+notes/
+*.local.md
