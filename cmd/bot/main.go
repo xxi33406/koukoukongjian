@@ -1,0 +1,325 @@
+// Command bot 是一个无头测试客户端。
+//
+// 它的用途不是"玩"，而是把网络闭环的每一环都压出来：握手、加入、输入
+// 上行、快照下行、断线重连。压力测试和丢包回归都靠它跑。
+//
+// 设计上刻意只依赖 netx 与 proto，不碰 room / world——如果 bot 需要
+// import 服务端内部结构才能连上，说明协议本身不完整。
+package main
+
+import (
+	"context"
+	"flag"
+	"fmt"
+	"math"
+	"math/rand"
+	"os"
+	"os/signal"
+	"sync"
+	"sync/atomic"
+	"syscall"
+	"time"
+
+	"koukoukongjian/internal/netx"
+	"koukoukongjian/internal/proto"
+)
+
+func main() {
+	if err := run(); err != nil {
+		fmt.Fprintf(os.Stderr, "bot 失败：%v\n", err)
+		os.Exit(1)
+	}
+}
+
+func run() error {
+	var (
+		addr     = flag.String("addr", "127.0.0.1:27015", "服务器地址")
+		name     = flag.String("name", "bot", "玩家名")
+		count    = flag.Int("count", 1, "并发 bot 数量")
+		duration = flag.Duration("duration", 10*time.Second, "运行时长")
+		inputHz  = flag.Int("input-hz", 30, "输入发送频率")
+		circle   = flag.Bool("circle", true, "绕圈移动（否则随机方向）")
+		verbose  = flag.Bool("v", false, "打印每帧快照统计")
+	)
+	flag.Parse()
+
+	if *count < 1 {
+		return fmt.Errorf("count 必须 >= 1")
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	ctx, cancel := context.WithTimeout(ctx, *duration)
+	defer cancel()
+
+	var (
+		totalSnap atomic.Uint64
+		totalRecv atomic.Uint64
+		okBots    atomic.Int32
+	)
+
+	var wg sync.WaitGroup
+	for i := 0; i < *count; i++ {
+		botName := *name
+		if *count > 1 {
+			botName = fmt.Sprintf("%s-%d", *name, i)
+		}
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			err := runBot(ctx, *addr, botName, idx, *inputHz, *circle, *verbose,
+				&totalSnap, &totalRecv)
+			if err != nil {
+				fmt.Printf("[%s] 失败：%v\n", botName, err)
+				return
+			}
+			okBots.Add(1)
+		}(i)
+	}
+	wg.Wait()
+
+	fmt.Printf("完成：%d/%d 个 bot 正常退出，共收到 %d 份快照，%d 个包\n",
+		okBots.Load(), *count, totalSnap.Load(), totalRecv.Load())
+	if okBots.Load() == 0 {
+		return fmt.Errorf("所有 bot 都失败了")
+	}
+	return nil
+}
+
+// bot 是一个 bot 的运行时状态。
+type bot struct {
+	name string
+	idx  int
+
+	snaps atomic.Uint64
+	recv  atomic.Uint64
+
+	// tick 是客户端自增的输入序号，服务端会回显它。
+	tick atomic.Uint32
+}
+
+func runBot(ctx context.Context, addr, name string, idx, inputHz int, circle, verbose bool,
+	snaps, recv *atomic.Uint64) error {
+
+	cfg := netx.DefaultClientConfig()
+	c, err := netx.Dial(addr, cfg)
+	if err != nil {
+		return fmt.Errorf("连接失败：%w", err)
+	}
+	defer c.Close()
+
+	b := &bot{name: name, idx: idx}
+
+	// Client.Run 会阻塞在读循环上，所以放独立 goroutine。
+	runErr := make(chan error, 1)
+	go func() { runErr <- c.Run(ctx) }()
+
+	// 1. 握手。等 HelloAck。
+	if err := b.handshake(c, name); err != nil {
+		return err
+	}
+
+	// 2. 加入房间。等 JoinOk。
+	if err := b.join(c); err != nil {
+		return err
+	}
+
+	// 3. 并行跑输入发送与快照接收。
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		b.sendInputs(ctx, c, inputHz, circle)
+	}()
+	go func() {
+		defer wg.Done()
+		b.recvSnapshots(ctx, c, verbose)
+	}()
+	wg.Wait()
+
+	select {
+	case err := <-runErr:
+		if err != nil && ctx.Err() == nil {
+			return fmt.Errorf("网络读循环退出：%w", err)
+		}
+	default:
+	}
+
+	// 汇报统计。RecvPackets 是传输层计数，snaps 是应用层计数——两者
+	// 差得多说明有大量非快照包（比如重复的 ack 包），是有用的信号。
+	st := c.Stats(time.Now())
+	snaps.Add(b.snaps.Load())
+	recv.Add(uint64(st.RecvPackets))
+
+	fmt.Printf("[%s] 快照 %d 份，收包 %d 个，发包 %d 个，重传中 %d，丢发送 %d\n",
+		b.name, b.snaps.Load(), st.RecvPackets, st.SentPackets,
+		st.ReliableInFly, st.DroppedSend)
+
+	if b.snaps.Load() == 0 {
+		return fmt.Errorf("一份快照都没收到")
+	}
+	return nil
+}
+
+// handshake 发送 Hello 并等待 HelloAck。
+func (b *bot) handshake(c *netx.Client, name string) error {
+	hello := proto.NewHello(name, "")
+	data, err := proto.Marshal(&proto.Envelope{
+		Body: &proto.Envelope_Hello{Hello: hello},
+	})
+	if err != nil {
+		return err
+	}
+	if !c.Send(data) {
+		return fmt.Errorf("发送 Hello 失败")
+	}
+
+	reply := c.RecvReliable(3 * time.Second)
+	if reply == nil {
+		return fmt.Errorf("等待 HelloAck 超时")
+	}
+	var env proto.Envelope
+	if err := proto.Unmarshal(reply, &env); err != nil {
+		return fmt.Errorf("HelloAck 解码失败：%w", err)
+	}
+	ack, ok := env.Body.(*proto.Envelope_HelloAck)
+	if !ok {
+		return fmt.Errorf("期望 HelloAck，收到别的消息")
+	}
+	if ack.HelloAck.TickRate == 0 {
+		return fmt.Errorf("HelloAck 里 tick_rate 为 0")
+	}
+	return nil
+}
+
+// join 发送 JoinRoom 并等待 JoinOk。
+func (b *bot) join(c *netx.Client) error {
+	data, err := proto.Marshal(&proto.Envelope{
+		Body: &proto.Envelope_JoinRoom{
+			JoinRoom: &proto.JoinRoom{RoomId: "", PreferredSlot: 0xFF},
+		},
+	})
+	if err != nil {
+		return err
+	}
+	if !c.Send(data) {
+		return fmt.Errorf("发送 JoinRoom 失败")
+	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		reply := c.RecvReliable(500 * time.Millisecond)
+		if reply == nil {
+			continue
+		}
+		var env proto.Envelope
+		if err := proto.Unmarshal(reply, &env); err != nil {
+			continue
+		}
+		if ok, isOk := env.Body.(*proto.Envelope_JoinOk); isOk {
+			if ok.JoinOk.WorldSeed == 0 {
+				return fmt.Errorf("JoinOk 里 world_seed 为 0")
+			}
+			return nil
+		}
+	}
+	return fmt.Errorf("等待 JoinOk 超时")
+}
+
+// sendInputs 按固定频率发输入，方向绕圈或随机。
+func (b *bot) sendInputs(ctx context.Context, c *netx.Client, hz int, circle bool) {
+	if hz <= 0 {
+		hz = 30
+	}
+	interval := time.Second / time.Duration(hz)
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	rng := rand.New(rand.NewSource(int64(b.idx)*7919 + 13))
+	// 每个 bot 起始相位错开，否则所有 bot 叠在一起走。
+	phase := float64(b.idx) * math.Pi / 2
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+
+		tick := b.tick.Add(1)
+
+		var mx, my, ax, ay int32
+		if circle {
+			// 绕圈走：方向随 tick 匀速旋转。
+			t := float64(tick) * 0.05
+			ang := t + phase
+			mx = int32(math.Cos(ang) * 1000)
+			my = int32(math.Sin(ang) * 1000)
+			// 瞄准与移动同向，这样画面上朝向和速度一致。
+			ax, ay = mx, my
+		} else {
+			ang := rng.Float64() * 2 * math.Pi
+			mx = int32(math.Cos(ang) * 1000)
+			my = int32(math.Sin(ang) * 1000)
+			ax, ay = mx, my
+		}
+
+		msg := &proto.Envelope{
+			Body: &proto.Envelope_Input{
+				Input: &proto.Input{
+					Tick: tick,
+					Frames: []*proto.InputFrame{{
+						MoveX: mx, MoveY: my,
+						AimX: ax, AimY: ay,
+					}},
+				},
+			},
+		}
+		data, err := proto.Marshal(msg)
+		if err != nil {
+			return
+		}
+		if !c.Send(data) {
+			// 窗口满时跳过这一帧：输入是"当前状态"而非"事件"，
+			// 丢掉旧的一帧不影响正确性。
+			continue
+		}
+	}
+}
+
+// recvSnapshots 收快照并统计。
+func (b *bot) recvSnapshots(ctx context.Context, c *netx.Client, verbose bool) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
+		data := c.RecvSnapshot(200 * time.Millisecond)
+		if data == nil {
+			continue
+		}
+		var snap proto.Snapshot
+		if err := proto.Unmarshal(data, &snap); err != nil {
+			continue
+		}
+		b.snaps.Add(1)
+		if snap.Self == nil && b.snaps.Load() > 1 {
+			// 第一份快照可能刚好落在自己加入之前；之后每份都该有 self。
+			if verbose {
+				fmt.Printf("[%s] 快照 %d 缺少 self\n", b.name, snap.ServerTick)
+			}
+		}
+		if verbose && b.snaps.Load()%20 == 0 {
+			x, y := 0.0, 0.0
+			if snap.Self != nil {
+				x = proto.DequantizePos(snap.Self.Pos.X)
+				y = proto.DequantizePos(snap.Self.Pos.Y)
+			}
+			fmt.Printf("[%s] tick=%d self=(%.1f,%.1f) adds=%d upd=%d rem=%d\n",
+				b.name, snap.ServerTick, x, y,
+				len(snap.Adds), len(snap.Updates), len(snap.Removes))
+		}
+	}
+}
