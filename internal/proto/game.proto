@@ -1,0 +1,177 @@
+// 游戏协议消息定义。
+//
+// 这份 .proto 是 Go 服务端与 Unity C# 客户端的唯一协议真相：
+// 两边都由它生成代码，字段顺序错位这类只在运行时暴露的 bug 才不会发生。
+// 术语与 docs/server-design-v0.1.md §13、docs/combat-design-v0.1.md §6 对齐。
+syntax = "proto3";
+
+package proto;
+
+option go_package = "koukoukongjian/internal/proto;proto";
+
+// ---------- 连接与房间 ----------
+
+// Hello 是客户端连接后的第一条消息（可靠通道）。
+message Hello {
+  uint32 protocol_version = 1; // 与 netx.Version 对应，不匹配直接拒绝
+  string player_name = 2;      // 仅用于显示，不参与逻辑
+  string token = 3;            // 重连凭证，首次连接为空
+}
+
+message HelloAck {
+  uint64 session_id = 1;
+  string token = 2;    // 后续重连带上它即可恢复原槽位
+  string room_id = 3;  // 服务器分配的房间
+  uint32 tick_rate = 4;
+}
+
+// JoinRoom 请求加入房间。
+message JoinRoom {
+  string room_id = 1;
+  uint32 preferred_slot = 2; // 0xFF 表示不指定
+}
+
+message JoinOk {
+  uint32 slot = 1;      // 0..3
+  int64 world_seed = 2;
+  uint32 start_tick = 3;
+}
+
+// PlayerJoined / PlayerLeft 上报槽位变化。
+message PlayerJoined {
+  uint32 slot = 1;
+  string name = 2;
+}
+
+message PlayerLeft {
+  uint32 slot = 1;
+  uint32 reason = 2; // 0=quit 1=timeout 2=kicked
+}
+
+// ---------- 输入与快照 ----------
+
+// Input 是上行输入包（快照通道，不可靠，丢了就丢了）。
+//
+// 一次带 sub_steps 个子帧，让客户端按渲染帧率采样、服务器按固定步长消费。
+message Input {
+  uint32 tick = 1;              // 客户端认为的世界 tick
+  repeated InputFrame frames = 2; // 长度应等于 sub_steps
+}
+
+message InputFrame {
+  int32 move_x = 1;  // -1000..1000 量化的移动意图
+  int32 move_y = 2;
+  int32 aim_x = 3;   // 瞄准方向（单位向量 × 1000）
+  int32 aim_y = 4;
+  uint32 buttons = 5; // 位掩码：1=攻击 2=技能1 4=技能2 8=交互
+}
+
+// Vec2Q 是量化后的二维向量。精度见 combat-design §6.2。
+message Vec2Q {
+  int32 x = 1;
+  int32 y = 2;
+}
+
+message PlayerSelf {
+  uint32 entity_id = 1;
+  Vec2Q pos = 2;      // 1/32 m
+  Vec2Q vel = 3;      // 1/256 m/s
+  uint32 aim = 4;     // 2π/65536
+  int32 hp = 5;
+  int32 max_hp = 6;
+  uint32 gold = 7;
+  uint32 state = 8;    // PlayerStateKind
+  uint32 flags = 9;
+}
+
+message Snapshot {
+  uint32 server_tick = 1;
+  uint32 acked_input_tick = 2; // 供客户端校正本地预测
+  PlayerSelf self = 3;         // 只含接收者自己的状态
+  repeated EntityDelta adds = 4;    // 本 tick 新出现的实体
+  repeated EntityDelta updates = 5; // 本 tick 变化的实体
+  repeated uint32 removes = 6;      // 本 tick 消失的实体 ID
+  repeated uint64 fog_delta = 7;    // 新点亮的迷雾格
+  repeated GameEvent events = 8;    // 搭车的小事件
+}
+
+// EntityDelta 是实体状态。全量时所有字段都填，增量时只填变化的。
+message EntityDelta {
+  uint32 entity_id = 1;
+  EntityKind kind = 2;
+  Vec2Q pos = 3;
+  Vec2Q vel = 4;
+  uint32 aim = 5;
+  int32 hp = 6;
+  int32 max_hp = 7;
+  uint32 state = 8;
+  uint32 flags = 9;
+  uint32 element = 10;
+  uint32 owner_id = 11; // 子弹/技能的主人
+  uint32 radius_q = 12; // 1/256 m
+}
+
+enum EntityKind {
+  ENTITY_KIND_UNSPECIFIED = 0;
+  ENTITY_KIND_PLAYER = 1;
+  ENTITY_KIND_MONSTER = 2;
+  ENTITY_KIND_BULLET = 3;
+  ENTITY_KIND_PICKUP = 4;
+}
+
+enum GameEventKind {
+  GAME_EVENT_KIND_UNSPECIFIED = 0;
+  GAME_EVENT_KIND_DAMAGE = 1;
+  GAME_EVENT_KIND_KILL = 2;
+  GAME_EVENT_KIND_PICKUP = 3;
+  GAME_EVENT_KIND_LEVEL_UP = 4;
+  GAME_EVENT_KIND_DEATH = 5;
+  GAME_EVENT_KIND_REVIVE = 6;
+}
+
+message GameEvent {
+  GameEventKind kind = 1;
+  uint32 a = 2; // 语义随 kind：source / entity / slot
+  uint32 b = 3; // target / amount
+  int32 value = 4;
+  uint32 element = 5;
+}
+
+// ---------- 其他上行 ----------
+
+// Ping 每 500ms 一次，用于 RTT 采样。
+message Ping {
+  uint64 client_time_ns = 1;
+}
+
+message Pong {
+  uint64 client_time_ns = 1;
+  uint64 server_time_ns = 2;
+}
+
+// ReqFullSnapshot 让客户端在发现丢包时主动请求全量基线。
+message ReqFullSnapshot {
+  uint32 last_seen_tick = 1;
+}
+
+// ---------- 信封 ----------
+
+// Envelope 把多种消息装进一个可靠通道载荷里。
+//
+// 可靠通道是字节流语义，必须自带消息边界，所以每条消息都过 Envelope。
+// 快照通道不用它：快照每包一条，包边界就是消息边界。
+message Envelope {
+  oneof body {
+    Hello hello = 1;
+    HelloAck hello_ack = 2;
+    JoinRoom join_room = 3;
+    JoinOk join_ok = 4;
+    PlayerJoined player_joined = 5;
+    PlayerLeft player_left = 6;
+    Input input = 7;
+    Snapshot snapshot = 8;
+    Ping ping = 9;
+    Pong pong = 10;
+    ReqFullSnapshot req_full_snapshot = 11;
+  }
+}
