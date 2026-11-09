@@ -1,0 +1,41 @@
+# koukoukongjian 服务器配置
+#
+# 所有键都可省略：省略即用 internal/config 里的内置默认值。
+# 注意加载器会拒绝未知键——拼错的键会静默保留默认值，那类问题极难查，
+# 所以宁可启动时报错。
+#
+# 数值来源：docs/combat-design-v0.1.md §7 参数汇总表。改这里之前先改文档。
+
+[server]
+name       = "koukoukongjian"
+bind       = "0.0.0.0:7777"
+tick_rate  = 20   # 逻辑 tick 频率（Hz）。20Hz = 50ms 一个 tick
+sub_steps  = 3    # 每 tick 的物理子步数。3 子步 × 20Hz = 60Hz 物理
+
+[network]
+interp_delay_ms     = 100  # 客户端插值缓冲。必须 ≥ 2 个 tick，否则丢一个包就断流
+position_history_ms = 500  # 玩家位置环形缓冲时长，受击宽容回溯用
+
+[combat]
+hit_lag_compensation = true   # 受击宽容开关
+hit_leniency_radius  = 0.15   # 米。回溯之后的额外宽容半径
+max_bullets          = 512    # 子弹硬上限，超出淘汰最老的敌方子弹
+
+[ai]
+aggro_rescore_interval_s = 0.5  # 仇恨重算间隔
+path_recalc_interval_s   = 0.3  # 寻路重算间隔
+
+[space]
+# 注意这是两套独立的格子，不要试图统一
+spatial_cell_size       = 2.0  # 米。空间索引格，存实体下标，每 tick 重建
+spatial_brute_threshold = 200  # 实体数低于此值改用暴力遍历（实测更快）
+terrain_cell_size       = 1.0  # 米。地形位图格，存地/墙，一局只建一次
+
+[world]
+terrain_width  = 128   # 地形格数，×1m = 128 米宽
+terrain_height = 128
+max_players    = 4
+
+[log]
+level  = "info"  # debug / info / warn / error
+format = "text"  # text / json
