@@ -211,6 +211,34 @@ func TestReassemblerTooBig(t *testing.T) {
 	t.Fatal("始终没有触发上限")
 }
 
+// 调用方（网络层）直接传读缓冲里的切片，读缓冲在下一个包到达时就被复用。
+// Push 必须复制，否则先到的片会被后来的包覆盖，凑齐后拼出垃圾——实测
+// 表现是大消息首字节变成无关值。
+func TestReassemblerCopiesPayload(t *testing.T) {
+	r := NewReassembler(nil)
+
+	// 模拟 2 片、每片 4 字节的复用读缓冲。
+	buf := make([]byte, 4)
+
+	copy(buf, "AAAA")
+	if _, done, err := r.Push(FragHeader{MsgID: 7, Index: 0, Count: 2}, buf); err != nil || done {
+		t.Fatalf("第 1 片：done=%v err=%v", done, err)
+	}
+
+	// 第 2 片到达，读缓冲被复用。
+	copy(buf, "BBBB")
+	whole, done, err := r.Push(FragHeader{MsgID: 7, Index: 1, Count: 2}, buf)
+	if err != nil {
+		t.Fatalf("第 2 片失败：%v", err)
+	}
+	if !done {
+		t.Fatal("两片到齐应完成")
+	}
+	if string(whole) != "AAAABBBB" {
+		t.Fatalf("拼出 %q，期望 \"AAAABBBB\"——第 1 片被读缓冲复写覆盖了", whole)
+	}
+}
+
 func TestReassemblerReset(t *testing.T) {
 	r := NewReassembler(nil)
 	for i := 0; i < 3; i++ {

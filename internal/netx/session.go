@@ -205,34 +205,61 @@ func (s *Session) SendSnapshot(payload []byte) bool {
 //
 // 返回 false 表示在途窗口已满、队列已满或会话已关闭。窗口满意味着对端
 // 很长时间没有确认，实际应当走会话超时而不是继续排队。
+//
+// 超过单包上限的消息会被切成多片发送，但**整条消息只占一个 seq**——
+// 分片只是绕开单包上限，不是独立的可靠单元。详见 reliableSender.Send。
 func (s *Session) SendReliable(payload []byte) bool {
 	if s.Closed() {
 		return false
 	}
 
 	s.mu.Lock()
-	seq, ok := s.reliable.Send(payload)
+	pkt, ok := s.reliable.SendParts(payload)
 	s.mu.Unlock()
-	if !ok {
+	if !ok || pkt == nil {
 		return false
 	}
 
-	return s.enqueueReliable(seq, payload)
+	return s.sendParts(pkt)
 }
 
-// enqueueReliable 把已登记的可靠包编码并投递。
-func (s *Session) enqueueReliable(seq uint16, payload []byte) bool {
+// sendParts 把一条已登记的消息的所有分片编码投递。
+func (s *Session) sendParts(pkt *outboundPacket) bool {
+	all := true
+	last := len(pkt.parts) - 1
+	for i, body := range pkt.parts {
+		flags := Flags(0)
+		if pkt.fragmented {
+			flags |= FlagFragmented
+			if i == last {
+				flags |= FlagLastFrag
+			}
+		}
+		if !s.enqueueReliable(pkt.seq, body, flags) {
+			all = false
+		}
+	}
+	return all
+}
+
+// enqueueReliable 把一片编码成完整包并投递。
+//
+// body 已经含分片头（未分片的消息则不含），fragFlags 是该片的标志。
+// 标志必须进包头：接收侧靠 FlagFragmented 判断"这是分片"而不是一条
+// 完整消息，靠 FlagLastFrag 知道最后一片到了。
+func (s *Session) enqueueReliable(seq uint16, body []byte, fragFlags Flags) bool {
 	h := Header{
 		Version: Version,
 		Channel: ChannelReliable,
 		Seq:     seq,
+		Flags:   fragFlags,
 	}
 	if ackSeq, ackBits, ok := s.ackInfo(); ok {
 		h.AckSeq = ackSeq
 		h.AckBits = ackBits
 		h.Flags |= FlagHasAck
 	}
-	pkt := h.Append(make([]byte, 0, HeaderSize+len(payload)), payload)
+	pkt := h.Append(make([]byte, 0, HeaderSize+len(body)), body)
 	return s.enqueue(pkt)
 }
 
@@ -338,7 +365,9 @@ func (s *Session) DrainDue() int {
 	s.mu.Unlock()
 
 	for _, p := range due {
-		s.enqueueReliable(p.seq, p.payload)
+		// parts 存的是登记时的完整分片（含分片头），重传时整条一起补发。
+		// 分片标志在这里重算——它由固定的片序号决定，不需要存在包里。
+		s.sendParts(&outboundPacket{seq: p.seq, parts: p.parts, fragmented: len(p.parts) > 1})
 	}
 	return len(due)
 }

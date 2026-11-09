@@ -81,6 +81,10 @@ func NewReassembler(now func() time.Time) *Reassembler {
 //
 // 注意返回值 nil/true 与 nil/false 的区别：前者表示"消息完整了但内容
 // 是空的"，后者表示"还差分片"。调用方必须看第二个返回值。
+//
+// payload 会被复制。调用方通常直接传读缓冲里的切片，而读缓冲在下一个
+// 包到达时就被复用——不复制的话，先到的片会被后来的包覆盖，凑齐后拼出
+// 一条内容错乱的消息（实测表现为大消息首字节是垃圾值）。
 func (r *Reassembler) Push(f FragHeader, payload []byte) ([]byte, bool, error) {
 	t := r.now()
 
@@ -120,7 +124,11 @@ func (r *Reassembler) Push(f FragHeader, payload []byte) ([]byte, bool, error) {
 			ErrReassemblyTooBig, set.size, len(payload))
 	}
 
-	set.parts[f.Index] = payload
+	// 复制：读缓冲会被下一个包复用，不复制则先到的片会被覆盖。
+	buf := make([]byte, len(payload))
+	copy(buf, payload)
+
+	set.parts[f.Index] = buf
 	set.got++
 	set.size += len(payload)
 

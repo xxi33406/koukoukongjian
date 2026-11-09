@@ -71,11 +71,39 @@ type reliableSender struct {
 }
 
 type outstandingPacket struct {
-	seq      uint16
-	payload  []byte
-	firstAt  time.Time
-	lastAt   time.Time
+	seq uint16
+	// parts 是这条消息的各个分片（含分片头）。未分片的消息只有 1 个
+	// 元素，且不含分片头。
+	//
+	// 存整个 parts 而不是单片：分片共享一个 seq，重传时整条一起补发。
+	parts   [][]byte
+	firstAt time.Time
+	lastAt  time.Time
+	// attempts 是已经发出的次数（首发算 1）。
 	attempts int
+}
+
+// Payload 把各片还原成原始载荷（去掉分片头、按序拼接）。
+//
+// 主要给测试与日志用：正常发送路径直接拿 parts 逐片写包头，不需要还原。
+func (p *outstandingPacket) Payload() []byte {
+	if len(p.parts) == 1 {
+		return p.parts[0]
+	}
+	var total int
+	for _, body := range p.parts {
+		if len(body) > FragHeaderSize {
+			total += len(body) - FragHeaderSize
+		}
+	}
+	out := make([]byte, 0, total)
+	for _, body := range p.parts {
+		if len(body) <= FragHeaderSize {
+			continue
+		}
+		out = append(out, body[FragHeaderSize:]...)
+	}
+	return out
 }
 
 func newReliableSender(now func() time.Time) *reliableSender {
@@ -93,11 +121,96 @@ func (s *reliableSender) canSend() bool {
 	return len(s.inflight) < sendWindow
 }
 
-// Send 把一条消息登记为待发送，返回应写入包头的 seq。
+// outboundPacket 是一条待发送的可靠消息（可能切成多片）。
 //
-// 返回 false 表示窗口已满，调用方应当阻塞或丢弃。对本项目而言窗口满
-// 意味着对端已经很久没有响应，实际应当走会话超时而不是继续排队。
+// 关键设计：**整条消息只占一个 seq**，所有片共享它。分片只是为了绕开
+// 单包 1200 字节的上限，不是独立的可靠单元。
+//
+// 这不是随意选的。如果每片各占一个 seq，接收侧就必须"每片都推进可靠
+// 序号"，可它又要等整条凑齐才能交付——于是第一片的 seq 一到达就被
+// 消费掉，而重组还没完成，后面几片的 seq 全排在它后面等一个永远不会
+// 再出现的确认。实测表现就是大消息发出去永远收不到（
+// TestClientLargePayloadFragmentation 挂 5 秒超时）。
+//
+// 共享 seq 之后语义变得干净：片丢一片就是整条消息丢，重传整条，
+// 接收侧靠 MsgID 丢弃重复片，凑齐后按一个 seq 交付。
+type outboundPacket struct {
+	seq uint16
+	// parts 是各片的完整 body（含分片头）。单片消息时只有 1 个元素，
+	// 且不含分片头。
+	parts [][]byte
+	// fragmented 表示 parts 里每片都带分片头、发送时要置 FlagFragmented。
+	fragmented bool
+}
+
+// Send 把一条消息登记为待发送，返回它占用的 seq。
+//
+// 返回 false 表示窗口已满或消息过大（超过 MaxFragments 片）。对本项目
+// 而言窗口满意味着对端已经很久没有响应，实际应当走会话超时而不是继续
+// 排队。
+//
+// 需要拿到各片内容的调用方（会话层要逐个写包头发出）请用 SendParts；
+// Send 只是它的薄包装，供只关心序号的场景使用。
 func (s *reliableSender) Send(payload []byte) (uint16, bool) {
+	pkt, ok := s.SendParts(payload)
+	if !ok {
+		return 0, false
+	}
+	return pkt.seq, true
+}
+
+// SendParts 把一条消息登记为待发送，返回带全部分片的描述。
+//
+// 关键设计：整条消息只占一个 seq（见 outboundPacket 的注释）。
+func (s *reliableSender) SendParts(payload []byte) (*outboundPacket, bool) {
+	frags := FragCount(len(payload))
+	if frags > MaxFragments {
+		// 消息太大，切成 MaxFragments 片也装不下。宁可直接失败，也不要
+		// 悄悄发出一半——接收侧会拼出一条被截断的、语义错误的消息。
+		return nil, false
+	}
+	if !s.canSend() {
+		return nil, false
+	}
+
+	// 短消息不切，省掉分片头。
+	if frags == 1 && len(payload) <= MaxPayload {
+		seq, ok := s.enqueue([][]byte{payload})
+		if !ok {
+			return nil, false
+		}
+		return &outboundPacket{seq: seq, parts: [][]byte{payload}}, true
+	}
+
+	// MsgID 用本条消息的 seq：一条消息一个 seq，天然唯一，不需要另一个
+	// 计数器；接收侧看到同一个 MsgID 的片就知道它们属于同一条消息。
+	seq := s.nextSeq
+	msgID := seq
+
+	parts := make([][]byte, 0, frags)
+	for i := 0; i < frags; i++ {
+		start := i * fragChunk
+		end := start + fragChunk
+		if end > len(payload) {
+			end = len(payload)
+		}
+
+		fh := FragHeader{MsgID: msgID, Index: uint16(i), Count: uint16(frags)}
+		body := make([]byte, FragHeaderSize, FragHeaderSize+end-start)
+		fh.Encode(body)
+		body = append(body, payload[start:end]...)
+		parts = append(parts, body)
+	}
+
+	seq, ok := s.enqueue(parts)
+	if !ok {
+		return nil, false
+	}
+	return &outboundPacket{seq: seq, parts: parts, fragmented: true}, true
+}
+
+// enqueue 把一条消息（全部片）登记为一个待确认单元，返回它的 seq。
+func (s *reliableSender) enqueue(parts [][]byte) (uint16, bool) {
 	if !s.canSend() {
 		return 0, false
 	}
@@ -106,13 +219,17 @@ func (s *reliableSender) Send(payload []byte) (uint16, bool) {
 
 	// 复制载荷：调用方通常复用缓冲区，不复制会导致排队的包内容被后续
 	// 发送覆盖——这个 bug 只在重传时暴露，因为首发的包已经发出去了。
-	buf := make([]byte, len(payload))
-	copy(buf, payload)
+	copied := make([][]byte, len(parts))
+	for i, p := range parts {
+		buf := make([]byte, len(p))
+		copy(buf, p)
+		copied[i] = buf
+	}
 
 	now := s.nowFunc()
 	s.inflight = append(s.inflight, &outstandingPacket{
 		seq:      seq,
-		payload:  buf,
+		parts:    copied,
 		firstAt:  now,
 		lastAt:   now,
 		attempts: 1,

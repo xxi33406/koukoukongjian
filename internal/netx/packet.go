@@ -246,6 +246,26 @@ type FragHeader struct {
 // FragHeaderSize 是分片头长度。
 const FragHeaderSize = 6
 
+// fragChunk 是每片能装的净载荷长度：单包上限减去分片头。
+const fragChunk = MaxPayload - FragHeaderSize
+
+// FragCount 返回一条 payloadLen 字节的消息需要切成几片。
+//
+// 每片可装的净载荷是 fragChunk：发送侧分片后要在片首加上分片头，加起来
+// 不能超过单包上限。
+//
+// 空消息也必须占一片：接收侧靠"最后一片"标志判定消息结束，零片的消息
+// 永远没有最后一片，会一直挂在重组队列里直到超时。
+//
+// 返回值可能超过 MaxFragments（消息太大），调用方必须自己检查——这里
+// 不截断，截断会悄悄发出不完整的消息，接收侧拼出来的东西是错的。
+func FragCount(payloadLen int) int {
+	if payloadLen <= 0 {
+		return 1
+	}
+	return (payloadLen + fragChunk - 1) / fragChunk
+}
+
 // Encode 把分片头写入 dst 的前 FragHeaderSize 字节。
 func (f FragHeader) Encode(dst []byte) {
 	binary.LittleEndian.PutUint16(dst[0:2], f.MsgID)

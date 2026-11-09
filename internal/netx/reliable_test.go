@@ -41,8 +41,12 @@ func TestReliableSenderCopiesPayload(t *testing.T) {
 	var found bool
 	for _, p := range s.inflight {
 		if p.seq == seq {
-			if string(p.payload) != "original" {
-				t.Fatalf("载荷被调用方的写入覆盖了：%q", p.payload)
+			// 未分片的消息只有一个 part，且不含分片头。
+			if len(p.parts) != 1 {
+				t.Fatalf("短消息应只有 1 片，实际 %d 片", len(p.parts))
+			}
+			if string(p.parts[0]) != "original" {
+				t.Fatalf("载荷被调用方的写入覆盖了：%q", p.parts[0])
 			}
 			found = true
 		}
@@ -575,7 +579,7 @@ func TestReliableEndToEndWithLoss(t *testing.T) {
 	}
 
 	// 重传的包到达，应一次性交付剩余全部
-	got := receiver.Receive(due[0].seq, due[0].payload)
+	got := receiver.Receive(due[0].seq, due[0].Payload())
 	if len(got) != 4 {
 		t.Fatalf("补齐后应交付 4 条，实际 %d", len(got))
 	}
@@ -601,7 +605,7 @@ func deliverAll(s *reliableSender, r *reliableReceiver, drop map[uint16]bool) []
 		if drop[p.seq] {
 			continue
 		}
-		delivered = append(delivered, r.Receive(p.seq, p.payload)...)
+		delivered = append(delivered, r.Receive(p.seq, p.Payload())...)
 	}
 	return delivered
 }
@@ -643,7 +647,7 @@ func TestReliableEndToEndRandomLoss(t *testing.T) {
 			if rounds == 1 && dropped[p.seq] {
 				continue
 			}
-			for _, m := range receiver.Receive(p.seq, p.payload) {
+			for _, m := range receiver.Receive(p.seq, p.Payload()) {
 				got = append(got, string(m))
 			}
 		}
