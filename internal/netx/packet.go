@@ -68,6 +68,8 @@ var (
 	ErrBadChannel = errors.New("netx: 非法通道号")
 	// ErrPayloadTooBig 表示载荷超过单包上限。
 	ErrPayloadTooBig = errors.New("netx: 载荷超长")
+	// ErrBadConfig 表示服务端或会话参数不合法。
+	ErrBadConfig = errors.New("netx: 参数不合法")
 )
 
 // Channel 是逻辑通道号。
@@ -110,7 +112,7 @@ func (c Channel) Valid() bool { return c < channelCount }
 type Flags uint8
 
 const (
-	// FlagFragmented 表示本包是一个分片，载荷前有 4 字节分片头。
+	// FlagFragmented 表示本包是一个分片，载荷前有 6 字节分片头。
 	FlagFragmented Flags = 1 << 0
 
 	// FlagLastFrag 表示这是最后一个分片。
@@ -119,6 +121,14 @@ const (
 	// count 也正确，一个损坏的 count 会让重组的期望长度错掉；有明确的
 	// 结束标记，重组层就能在凑齐时立刻交付，不必等超时。
 	FlagLastFrag Flags = 1 << 1
+
+	// FlagHasAck 表示本包携带有效的 ack 字段。
+	//
+	// 没有这个标志就没法区分"确认了对方的 seq 0"和"还没收到过任何包"：
+	// 两者在包头上都是 ackSeq=0、ackBits=0。前者若被当成后者，对方的
+	// seq 0 会一直重传；后者若被当成前者（无条件 ack 0,0），对方真的丢了
+	// seq 0 时会被误判为已送达而永久丢失——两个方向都是硬故障。
+	FlagHasAck Flags = 1 << 2
 )
 
 // Has 判断某个标志位是否置位。
