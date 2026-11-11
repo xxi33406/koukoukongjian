@@ -185,10 +185,16 @@ message ReqFullSnapshot {
 
 // ---------- 信封 ----------
 
-// Envelope 把多种消息装进一个可靠通道载荷里。
+// Envelope 是**两条通道**上所有消息的统一外壳。
 //
 // 可靠通道是字节流语义，必须自带消息边界，所以每条消息都过 Envelope。
-// 快照通道不用它：快照每包一条，包边界就是消息边界。
+// 快照通道虽然一条消息就是一个包、理论上不需要边界，但也必须套：
+// protobuf 的裸消息没有类型标签，Unmarshal 遇到认不出的字段会静默跳过
+// 而不是报错。同一条通道上只要出现第二种消息，裸格式就会互相误判——
+// 实测裸 Snapshot 当 Envelope 解得到 err=nil/body=nil，Envelope{Pong}
+// 当 Snapshot 解得到 err=nil/tick=0，两次误判都不报错，客户端表现为
+// "连上了但画面不动"。套一层靠 oneof 的字段号区分类型。
+// 详见 docs/milestone-m1-cleanup.md §6.1。
 message Envelope {
   oneof body {
     Hello hello = 1;
