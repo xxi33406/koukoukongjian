@@ -152,8 +152,19 @@ func (c *Client) LocalAddr() net.Addr { return c.conn.LocalAddr() }
 // RemoteAddr 返回服务端地址。
 func (c *Client) RemoteAddr() net.Addr { return c.conn.RemoteAddr() }
 
-// Send 发一条可靠消息。
+// Send 发一条可靠消息（会重传直到被确认）。
 func (c *Client) Send(payload []byte) bool { return c.sess.SendReliable(payload) }
+
+// SendSnapshot 发一条不可靠消息。
+//
+// 主要用于上行输入。输入是"覆盖式"数据：第 N+1 帧的意图本来就会盖掉第
+// N 帧，走可靠通道反而有害——丢一帧会让后面所有帧排队等它重传，实测
+// 10% 丢包下 60 帧里 36 帧被连带延迟、最大 116ms，而那帧意图早被覆盖了。
+// 抗丢包靠应用层重复携带最近几帧，见 proto.Input 的注释。
+//
+// 返回 false 表示发送队列已满或会话已关闭。注意这不代表对方没收到——
+// 快照通道本来就不保证送达，调用方也不该等待重试。
+func (c *Client) SendSnapshot(payload []byte) bool { return c.sess.SendSnapshot(payload) }
 
 // InFlight 返回未确认的可靠包数。握手/输入的观测口。
 func (c *Client) InFlight() int { return c.sess.InFlight() }

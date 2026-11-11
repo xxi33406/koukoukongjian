@@ -59,6 +59,17 @@ type clientPeer struct {
 	sink chan []byte
 	// joined 表示已完成加入，可以处理输入了。
 	joined bool
+
+	// lastInputTick 是最近一次已处理的输入帧 tick，用于去重。
+	//
+	// 输入走不可靠通道且客户端会重复携带最近几帧，同一帧到达多次是常态。
+	// 没有这条记录，重复帧会让按键按位或把已松开的键又续上。
+	lastInputTick uint32
+	// hasInput 区分"还没收到过输入"与"收到的第一帧 tick 恰好是 0"。
+	//
+	// 少了它，lastInputTick 的零值会被当成合法数据，客户端发的第一帧
+	// tick=0 会被判成已处理而丢弃——玩家加入后第一次操作没反应。
+	hasInput bool
 }
 
 // newNetBridge 创建网桥。
@@ -113,11 +124,25 @@ func (b *netBridge) OnReliable(s *netx.Session, payload []byte) {
 	}
 }
 
-// OnSnapshot 处理不可靠通道上的上行快照。
+// OnSnapshot 处理不可靠通道上的上行消息。
 //
-// 协议上没有客户端发快照的用途，忽略。这个方法存在只是为了满足
-// netx.Handler 接口。
-func (b *netBridge) OnSnapshot(*netx.Session, []byte) {}
+// 玩家输入走这条通道。选它有代价（丢了就没了），但走可靠通道的代价更大：
+// 输入是覆盖式数据，迟到不如不到。实测与完整取舍见 docs/channel-design.md。
+func (b *netBridge) OnSnapshot(s *netx.Session, payload []byte) {
+	var env proto.Envelope
+	if err := proto.Unmarshal(payload, &env); err != nil {
+		// 不可靠通道上解码失败很正常（丢包后的残包），不值得 warn。
+		b.log.Debug("快照消息解码失败", "session", s.ID(), "err", err)
+		return
+	}
+
+	switch body := env.Body.(type) {
+	case *proto.Envelope_Input:
+		b.handleInput(s, body.Input)
+	default:
+		b.log.Debug("未处理的快照消息类型", "session", s.ID())
+	}
+}
 
 // OnDisconnect 在会话超时或服务端关闭时调用。
 func (b *netBridge) OnDisconnect(s *netx.Session, reason string) {
@@ -279,34 +304,95 @@ func (b *netBridge) broadcastPlayerJoined(slot int, name string) {
 	}
 }
 
+// maxInputWindow 是一包输入最多接受多少帧。
+//
+// 客户端建议带 3 帧；留到 8 是给"客户端卡了 100ms 后一次补发"留余量。
+// 上限不是为了省内存（一帧 30 字节），而是为了抵挡恶意客户端一次塞一万帧
+// 让服务器在每个 tick 里做无意义的按位或。
+const maxInputWindow = 8
+
+// handleInput 处理一包上行输入。
+//
+// 这条通道不可靠，所以客户端每包重复携带最近几帧。这里的职责是三件事：
+//
+//  1. 去重：同一帧可能被多包携带送达多次，只能处理一次。
+//  2. 取最新帧作移动与瞄准意图：帧是覆盖式的，中间帧的移动意图没有意义。
+//     逐帧应用会让角色沿压缩后的轨迹瞬移（与 room.drainInputs 的理由相同）。
+//  3. 按键做按位或：捕获"按下又松开发生在两包之间"的短按。只对**新帧**
+//     做或，否则已处理过的旧帧会把按住状态永远续上。
+//
+// 代价必须写明：补帧场景下"松开"会晚一包（约 16ms）才生效。因为 or 把
+// 窗口内出现过的按键都当作按住。对连发式攻击只多打一颗子弹，对技能键
+// （按一次触发一次）反而是必要的。见 docs/channel-design.md。
 func (b *netBridge) handleInput(s *netx.Session, msg *proto.Input) {
+	if len(msg.Frames) == 0 {
+		return
+	}
+	frames := msg.Frames
+	if len(frames) > maxInputWindow {
+		// 帧按 tick 升序，最新的在尾部。
+		frames = frames[len(frames)-maxInputWindow:]
+	}
+
 	b.mu.Lock()
 	cp, ok := b.peers[s.ID()]
-	var slot int
-	var joined bool
-	if ok {
-		slot = cp.slot
-		joined = cp.joined
-	}
-	b.mu.Unlock()
-	if !ok || !joined || len(msg.Frames) == 0 {
+	if !ok || !cp.joined {
+		b.mu.Unlock()
 		return
 	}
 
-	// 一帧只取最后一条：多帧是客户端为抗抖动重复发的，逐条应用会让角色
-	// 沿中间轨迹瞬移（与 room.drainInputs 的理由相同）。
-	f := msg.Frames[len(msg.Frames)-1]
+	newest, buttons, changed := mergeInputFrames(frames, cp.lastInputTick, cp.hasInput)
+	if !changed {
+		// 整包都是已处理过的帧。重复送达很常见（丢包后客户端补帧），
+		// 静默忽略，不要重复投递到房间。
+		b.mu.Unlock()
+		return
+	}
+	cp.lastInputTick = newest.Tick
+	cp.hasInput = true
+	slot := cp.slot
+	b.mu.Unlock()
 
 	// 量化解码必须在网桥做，不能进 room——×1000 是协议约定，房间不该知道。
 	cmd := room.InputCommand{
-		Seq:  uint16(msg.Tick),
-		Move: systems.DecodeMove(f.MoveX, f.MoveY),
-		Aim:  systems.DecodeAim(f.AimX, f.AimY, 0),
+		Seq:     uint16(newest.Tick),
+		Move:    systems.DecodeMove(newest.MoveX, newest.MoveY),
+		Aim:     systems.DecodeAim(newest.AimX, newest.AimY, 0),
+		Buttons: buttons,
 	}
-	cmd.Buttons = f.Buttons
-
 	b.r.SendInput(slot, cmd)
 }
+
+// mergeInputFrames 从一包输入里挑出最新帧，并把窗口内的按键按位或。
+//
+// 参数 lastTick/hasLast 是上一包已处理到的位置。返回 changed=false 表示
+// 整包都是重复帧，调用方应直接忽略。
+//
+// 抽成纯函数是为了能脱离网络与锁测它——这段逻辑的三个坑（重复帧续上按键、
+// tick 回绕、首帧 tick=0）都只在特定输入序列下暴露，用真 UDP 测很难覆盖。
+func mergeInputFrames(frames []*proto.InputFrame, lastTick uint32, hasLast bool) (newest *proto.InputFrame, buttons uint32, changed bool) {
+	for _, f := range frames {
+		if f == nil {
+			continue
+		}
+		if hasLast && !tickAfter(f.Tick, lastTick) {
+			continue // 已处理过的帧
+		}
+		buttons |= f.Buttons
+		if newest == nil || tickAfter(f.Tick, newest.Tick) {
+			newest = f
+		}
+	}
+	return newest, buttons, newest != nil
+}
+
+// tickAfter 判断 a 是否晚于 b，用 int32 差处理 uint32 回绕。
+//
+// 直接写 a > b 会在 tick 越过 2^32 边界时永久失效——那时候所有新帧都
+// 被判成"旧帧"，玩家再也动不了，而且没有任何报错。
+// 60Hz 下 2^32 tick 约 828 天，实际撞不上，但 uint16 的 Seq 字段会——
+// 两者共用同一个 helper 保证不会只改一处。
+func tickAfter(a, b uint32) bool { return int32(a-b) > 0 }
 
 func (b *netBridge) handlePing(s *netx.Session, msg *proto.Ping) {
 	pong := &proto.Pong{

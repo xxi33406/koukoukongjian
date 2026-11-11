@@ -490,13 +490,33 @@ func (x *PlayerLeft) GetReason() uint32 {
 	return 0
 }
 
-// Input 是上行输入包（快照通道，不可靠，丢了就丢了）。
+// Input 是上行输入包，**走快照通道**（不可靠，丢了就丢）。
 //
-// 一次带 sub_steps 个子帧，让客户端按渲染帧率采样、服务器按固定步长消费。
+// 为什么走快照通道而不是可靠通道：输入是"覆盖式"数据，第 N+1 帧的意图
+// 本来就该覆盖第 N 帧。走可靠通道的话，丢一帧会让后面所有帧排队等它
+// 重传（实测 10% 丢包下 60 帧里有 36 帧被连带延迟，最大 116ms），
+// 而那帧的意图早就被覆盖了——迟到不如不到。
+// 实测数据与完整对比见 docs/channel-design.md。
+//
+// 抗丢包靠客户端重复携带：每一包包含**最近 N 个输入快照**（N=3 建议值），
+// 而不是只含当前一帧。服务器按 frame.tick 去重，取最新一帧作为移动意图，
+// 并把窗口内出现过的所有 buttons 位做**按位或**，用于捕获短按。
+//
+// 这样做的代价：10% 独立丢包下，连续丢 3 包的概率是 0.1%——也就是说
+// 短按被彻底丢失的概率是千分之一，而不是 10%。
+// 带宽代价：带 3 帧时上行 6.5 KB/s（带 1 帧是 2.7 KB/s），
+// 只占快照下行带宽（60~120 KB/s）的 5~10%。实测见 docs/channel-design.md。
 type Input struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Tick          uint32                 `protobuf:"varint,1,opt,name=tick,proto3" json:"tick,omitempty"`    // 客户端认为的世界 tick
-	Frames        []*InputFrame          `protobuf:"bytes,2,rep,name=frames,proto3" json:"frames,omitempty"` // 长度应等于 sub_steps
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// client_tick 是客户端**采样最新一帧时**的世界 tick。
+	// 服务器用它做基准时钟对齐，并用于计算丢掉了多少帧。
+	ClientTick uint32 `protobuf:"varint,1,opt,name=client_tick,json=clientTick,proto3" json:"client_tick,omitempty"`
+	// frames 是最近 N 个输入快照，**按 tick 升序排列**，最后一帧最新。
+	//
+	// 服务器不要求长度固定：收到几帧就处理几帧。
+	// 长度为 1 是合法的（客户端刚启动或极端带宽受限），
+	// 但强烈建议客户端始终带满 3 帧以获得抗丢包能力。
+	Frames        []*InputFrame `protobuf:"bytes,2,rep,name=frames,proto3" json:"frames,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -531,9 +551,9 @@ func (*Input) Descriptor() ([]byte, []int) {
 	return file_internal_proto_game_proto_rawDescGZIP(), []int{6}
 }
 
-func (x *Input) GetTick() uint32 {
+func (x *Input) GetClientTick() uint32 {
 	if x != nil {
-		return x.Tick
+		return x.ClientTick
 	}
 	return 0
 }
@@ -546,12 +566,19 @@ func (x *Input) GetFrames() []*InputFrame {
 }
 
 type InputFrame struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	MoveX         int32                  `protobuf:"varint,1,opt,name=move_x,json=moveX,proto3" json:"move_x,omitempty"` // -1000..1000 量化的移动意图
-	MoveY         int32                  `protobuf:"varint,2,opt,name=move_y,json=moveY,proto3" json:"move_y,omitempty"`
-	AimX          int32                  `protobuf:"varint,3,opt,name=aim_x,json=aimX,proto3" json:"aim_x,omitempty"` // 瞄准方向（单位向量 × 1000）
-	AimY          int32                  `protobuf:"varint,4,opt,name=aim_y,json=aimY,proto3" json:"aim_y,omitempty"`
-	Buttons       uint32                 `protobuf:"varint,5,opt,name=buttons,proto3" json:"buttons,omitempty"` // 位掩码：1=攻击 2=技能1 4=技能2 8=交互
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// tick 是这一帧采样时的客户端世界 tick，**必须严格递增**。
+	// 服务器用 (slot, tick) 做去重键：同一帧重复送达只应用一次。
+	Tick  uint32 `protobuf:"varint,1,opt,name=tick,proto3" json:"tick,omitempty"`
+	MoveX int32  `protobuf:"varint,2,opt,name=move_x,json=moveX,proto3" json:"move_x,omitempty"` // -1000..1000 量化的移动意图
+	MoveY int32  `protobuf:"varint,3,opt,name=move_y,json=moveY,proto3" json:"move_y,omitempty"`
+	AimX  int32  `protobuf:"varint,4,opt,name=aim_x,json=aimX,proto3" json:"aim_x,omitempty"` // 瞄准方向（单位向量 × 1000）
+	AimY  int32  `protobuf:"varint,5,opt,name=aim_y,json=aimY,proto3" json:"aim_y,omitempty"`
+	// buttons 是"当前按住"的位掩码：1=攻击 2=技能1 4=技能2 8=交互。
+	//
+	// 注意是"按住"而不是"本帧按下"。服务器会在整个 frames 窗口内做按位或，
+	// 所以短按（按下又松开发生在两包之间）只要有一帧被送达就能被捕获。
+	Buttons       uint32 `protobuf:"varint,6,opt,name=buttons,proto3" json:"buttons,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -584,6 +611,13 @@ func (x *InputFrame) ProtoReflect() protoreflect.Message {
 // Deprecated: Use InputFrame.ProtoReflect.Descriptor instead.
 func (*InputFrame) Descriptor() ([]byte, []int) {
 	return file_internal_proto_game_proto_rawDescGZIP(), []int{7}
+}
+
+func (x *InputFrame) GetTick() uint32 {
+	if x != nil {
+		return x.Tick
+	}
+	return 0
 }
 
 func (x *InputFrame) GetMoveX() int32 {
@@ -1494,17 +1528,19 @@ const file_internal_proto_game_proto_rawDesc = "" +
 	"\n" +
 	"PlayerLeft\x12\x12\n" +
 	"\x04slot\x18\x01 \x01(\rR\x04slot\x12\x16\n" +
-	"\x06reason\x18\x02 \x01(\rR\x06reason\"F\n" +
-	"\x05Input\x12\x12\n" +
-	"\x04tick\x18\x01 \x01(\rR\x04tick\x12)\n" +
-	"\x06frames\x18\x02 \x03(\v2\x11.proto.InputFrameR\x06frames\"~\n" +
+	"\x06reason\x18\x02 \x01(\rR\x06reason\"S\n" +
+	"\x05Input\x12\x1f\n" +
+	"\vclient_tick\x18\x01 \x01(\rR\n" +
+	"clientTick\x12)\n" +
+	"\x06frames\x18\x02 \x03(\v2\x11.proto.InputFrameR\x06frames\"\x92\x01\n" +
 	"\n" +
-	"InputFrame\x12\x15\n" +
-	"\x06move_x\x18\x01 \x01(\x05R\x05moveX\x12\x15\n" +
-	"\x06move_y\x18\x02 \x01(\x05R\x05moveY\x12\x13\n" +
-	"\x05aim_x\x18\x03 \x01(\x05R\x04aimX\x12\x13\n" +
-	"\x05aim_y\x18\x04 \x01(\x05R\x04aimY\x12\x18\n" +
-	"\abuttons\x18\x05 \x01(\rR\abuttons\"#\n" +
+	"InputFrame\x12\x12\n" +
+	"\x04tick\x18\x01 \x01(\rR\x04tick\x12\x15\n" +
+	"\x06move_x\x18\x02 \x01(\x05R\x05moveX\x12\x15\n" +
+	"\x06move_y\x18\x03 \x01(\x05R\x05moveY\x12\x13\n" +
+	"\x05aim_x\x18\x04 \x01(\x05R\x04aimX\x12\x13\n" +
+	"\x05aim_y\x18\x05 \x01(\x05R\x04aimY\x12\x18\n" +
+	"\abuttons\x18\x06 \x01(\rR\abuttons\"#\n" +
 	"\x05Vec2Q\x12\f\n" +
 	"\x01x\x18\x01 \x01(\x05R\x01x\x12\f\n" +
 	"\x01y\x18\x02 \x01(\x05R\x01y\"\xe2\x01\n" +

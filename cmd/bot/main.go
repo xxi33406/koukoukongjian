@@ -226,7 +226,18 @@ func (b *bot) join(c *netx.Client) error {
 	return fmt.Errorf("等待 JoinOk 超时")
 }
 
+// inputWindow 是每包重复携带的输入帧数。
+//
+// 输入走不可靠通道，丢包就丢意图。重复携带最近 3 帧后，短按被彻底丢失
+// 的概率从 10% 降到 0.1%（连续丢 3 包）。带宽代价：带 3 帧 6.5 KB/s，
+// 带 1 帧 2.7 KB/s，而下行快照是 60~120 KB/s，占比可忽略。
+// 实测见 docs/channel-design.md。
+const inputWindow = 3
+
 // sendInputs 按固定频率发输入，方向绕圈或随机。
+//
+// 每包带最近 inputWindow 帧（按 tick 升序），服务器按 tick 去重，取最新
+// 一帧作移动意图，窗口内所有 buttons 做按位或。这样一包丢失不会丢意图。
 func (b *bot) sendInputs(ctx context.Context, c *netx.Client, hz int, circle bool) {
 	if hz <= 0 {
 		hz = 30
@@ -238,6 +249,9 @@ func (b *bot) sendInputs(ctx context.Context, c *netx.Client, hz int, circle boo
 	rng := rand.New(rand.NewSource(int64(b.idx)*7919 + 13))
 	// 每个 bot 起始相位错开，否则所有 bot 叠在一起走。
 	phase := float64(b.idx) * math.Pi / 2
+
+	// window 保存最近几帧，环形使用。0 号位永远是最旧的。
+	var window [inputWindow]*proto.InputFrame
 
 	for {
 		select {
@@ -264,14 +278,27 @@ func (b *bot) sendInputs(ctx context.Context, c *netx.Client, hz int, circle boo
 			ax, ay = mx, my
 		}
 
+		// 左移窗口，把新帧放进最后一格。
+		copy(window[:], window[1:])
+		window[inputWindow-1] = &proto.InputFrame{
+			Tick:  tick,
+			MoveX: mx, MoveY: my,
+			AimX: ax, AimY: ay,
+		}
+
+		// 只发已经填上的帧：客户端刚启动时前两包不满 3 帧。
+		frames := make([]*proto.InputFrame, 0, inputWindow)
+		for _, f := range window {
+			if f != nil {
+				frames = append(frames, f)
+			}
+		}
+
 		msg := &proto.Envelope{
 			Body: &proto.Envelope_Input{
 				Input: &proto.Input{
-					Tick: tick,
-					Frames: []*proto.InputFrame{{
-						MoveX: mx, MoveY: my,
-						AimX: ax, AimY: ay,
-					}},
+					ClientTick: tick,
+					Frames:     frames,
 				},
 			},
 		}
@@ -279,9 +306,10 @@ func (b *bot) sendInputs(ctx context.Context, c *netx.Client, hz int, circle boo
 		if err != nil {
 			return
 		}
-		if !c.Send(data) {
-			// 窗口满时跳过这一帧：输入是"当前状态"而非"事件"，
-			// 丢掉旧的一帧不影响正确性。
+		// 走快照通道：输入是覆盖式数据，迟到不如不到。
+		if !c.SendSnapshot(data) {
+			// 发送队列满，跳过这一包。窗口里的帧不会丢——下一包还会带上
+			// 它们，这正是重复携带的好处。
 			continue
 		}
 	}
