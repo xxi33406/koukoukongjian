@@ -9,6 +9,11 @@ package proto;
 
 option go_package = "koukoukongjian/internal/proto;proto";
 
+// C# 的命名空间。不加这一行，protoc 会把 package 名首字母大写得到
+// namespace Proto —— 这是个通用词，Unity 项目里极容易与别的插件撞名，
+// 撞了的症状是一堆"找不到类型"或"类型有歧义"，而错误指向的却是生成文件。
+option csharp_namespace = "KK.Proto";
+
 // ---------- 连接与房间 ----------
 
 // Hello 是客户端连接后的第一条消息（可靠通道）。
