@@ -69,15 +69,28 @@ func nextSnapshot(t *testing.T, sink chan []byte, timeout time.Duration) *proto.
 		if !ok {
 			t.Fatal("sink 已被关闭")
 		}
-		var snap proto.Snapshot
-		if err := proto.Unmarshal(data, &snap); err != nil {
-			t.Fatalf("快照解码失败：%v", err)
-		}
-		return &snap
+		return decodeSnapshot(t, data)
 	case <-time.After(timeout):
 		t.Fatal("等待快照超时")
 		return nil
 	}
+}
+
+// decodeSnapshot 把 sink 里的一包字节解成快照。
+//
+// sink 里是包了 Envelope 的快照（快照通道上还有别的消息类型，裸消息
+// 无法自识别，见 internal/room/net.go 的 broadcast 注释）。
+func decodeSnapshot(t *testing.T, data []byte) *proto.Snapshot {
+	t.Helper()
+	var env proto.Envelope
+	if err := proto.Unmarshal(data, &env); err != nil {
+		t.Fatalf("快照解码失败：%v", err)
+	}
+	snap, ok := env.Body.(*proto.Envelope_Snapshot)
+	if !ok || snap.Snapshot == nil {
+		t.Fatalf("期望快照消息，实际是 %T", env.Body)
+	}
+	return snap.Snapshot
 }
 
 func TestJoinReturnsSlotAndEntity(t *testing.T) {
@@ -251,10 +264,7 @@ func TestInputMovesPlayer(t *testing.T) {
 			if !ok {
 				t.Fatal("sink 被关闭")
 			}
-			var snap proto.Snapshot
-			if err := proto.Unmarshal(data, &snap); err != nil {
-				t.Fatalf("解码失败：%v", err)
-			}
+			snap := decodeSnapshot(t, data)
 			if snap.Self == nil {
 				continue
 			}

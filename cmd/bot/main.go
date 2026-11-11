@@ -328,10 +328,18 @@ func (b *bot) recvSnapshots(ctx context.Context, c *netx.Client, verbose bool) {
 		if data == nil {
 			continue
 		}
-		var snap proto.Snapshot
-		if err := proto.Unmarshal(data, &snap); err != nil {
+		// 快照通道上不止快照一种消息（Pong 也走这条通道），所以要先解
+		// Envelope 看类型。直接往 proto.Snapshot 里解不会报错，只会得到
+		// 一个空快照——那种"连上了但画面不动"的 bug 很难查。
+		var env proto.Envelope
+		if err := proto.Unmarshal(data, &env); err != nil {
 			continue
 		}
+		body, ok := env.Body.(*proto.Envelope_Snapshot)
+		if !ok || body.Snapshot == nil {
+			continue
+		}
+		snap := body.Snapshot
 		b.snaps.Add(1)
 		if snap.Self == nil && b.snaps.Load() > 1 {
 			// 第一份快照可能刚好落在自己加入之前；之后每份都该有 self。

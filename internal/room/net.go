@@ -226,12 +226,21 @@ func (r *Room) drainInputs() {
 // broadcast 为每个在座玩家构建并下发一份快照。
 //
 // 非阻塞写入：sink 满说明客户端跟不上，丢这一帧比卡住整个房间好。
+//
+// 快照要包进 Envelope 再发，不能发裸 proto.Snapshot：快照通道上不止快照
+// 一种消息（bridge 的 Pong 也走这条通道），而裸 protobuf 消息之间无法
+// 自识别类型。实测裸 Snapshot{server_tick:123} 的字节是 087b102d，把它当
+// Envelope 解会得到 err=nil、body=nil；反过来把 Envelope{Pong} 当 Snapshot
+// 解得到 err=nil、tick=0。两种误判都不报错，客户端只会静默丢掉所有快照，
+// 表现为"连上了但画面不动"。套一层 Envelope 后靠 oneof 的字段号区分类型。
 func (r *Room) broadcast() {
 	r.peers.each(func(p *peer) {
 		snap, _ := p.builder.Build(r.World, p.id, false)
 		snap.AckedInputTick = uint32(p.lastInputSeq)
 
-		data, err := proto.Marshal(snap)
+		data, err := proto.Marshal(&proto.Envelope{
+			Body: &proto.Envelope_Snapshot{Snapshot: snap},
+		})
 		if err != nil {
 			// 编码失败是编程错误，但一个玩家出错不该拖垮整个房间。
 			r.log.Warn("快照编码失败", "slot", p.slot, "err", err)

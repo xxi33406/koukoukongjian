@@ -65,7 +65,10 @@ type Handler interface {
 	OnConnect(s *Session)
 	// OnReliable 收到一条完整、可按序交付的可靠消息。
 	OnReliable(s *Session, payload []byte)
-	// OnSnapshot 收到一个快照通道的包（仅用于回环测试，生产客户端不发送）。
+	// OnSnapshot 收到一个快照通道的包。
+	//
+	// 上行方向承载覆盖式数据：玩家输入与 Ping。丢包与乱序都是常态，
+	// 回调可能不按发送顺序被调用，也可能完全不来。
 	OnSnapshot(s *Session, payload []byte)
 	// OnDisconnect 在会话超时或服务端关闭时调用。reason 仅用于日志。
 	OnDisconnect(s *Session, reason string)

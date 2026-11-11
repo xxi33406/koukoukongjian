@@ -70,6 +70,9 @@ type clientPeer struct {
 	// 少了它，lastInputTick 的零值会被当成合法数据，客户端发的第一帧
 	// tick=0 会被判成已处理而丢弃——玩家加入后第一次操作没反应。
 	hasInput bool
+
+	// limiter 限制输入包频率。见 ratelimit.go 里对"为什么需要"的说明。
+	limiter inputLimiter
 }
 
 // newNetBridge 创建网桥。
@@ -103,6 +106,13 @@ func (b *netBridge) OnConnect(s *netx.Session) {
 }
 
 // OnReliable 处理可靠通道上的一条完整消息。
+//
+// 只放"迟到仍有语义"的消息：握手、加入房间。这些漏一条客户端就进不来，
+// 必须重传。
+//
+// 输入与 Ping 不在这里——它们是覆盖式数据（迟到的样本没用），走快照通道。
+// 曾经为了图省事把 Input 放在这里，代价是队头阻塞让 10% 丢包下有 60% 的帧
+// 被连带延迟，见 docs/milestone-m1-input-channel.md。
 func (b *netBridge) OnReliable(s *netx.Session, payload []byte) {
 	var env proto.Envelope
 	if err := proto.Unmarshal(payload, &env); err != nil {
@@ -115,19 +125,16 @@ func (b *netBridge) OnReliable(s *netx.Session, payload []byte) {
 		b.handleHello(s, body.Hello)
 	case *proto.Envelope_JoinRoom:
 		b.handleJoinRoom(s, body.JoinRoom)
-	case *proto.Envelope_Input:
-		b.handleInput(s, body.Input)
-	case *proto.Envelope_Ping:
-		b.handlePing(s, body.Ping)
 	default:
-		b.log.Debug("未处理的消息类型", "session", s.ID())
+		b.log.Debug("可靠通道上未处理的消息类型", "session", s.ID())
 	}
 }
 
 // OnSnapshot 处理不可靠通道上的上行消息。
 //
-// 玩家输入走这条通道。选它有代价（丢了就没了），但走可靠通道的代价更大：
-// 输入是覆盖式数据，迟到不如不到。实测与完整取舍见 docs/channel-design.md。
+// 走这条通道的是输入与 Ping。选它有代价（丢了就没了），但走可靠通道的
+// 代价更大：两者都是覆盖式数据，迟到不如不到。完整取舍见
+// docs/channel-design.md。
 func (b *netBridge) OnSnapshot(s *netx.Session, payload []byte) {
 	var env proto.Envelope
 	if err := proto.Unmarshal(payload, &env); err != nil {
@@ -139,6 +146,8 @@ func (b *netBridge) OnSnapshot(s *netx.Session, payload []byte) {
 	switch body := env.Body.(type) {
 	case *proto.Envelope_Input:
 		b.handleInput(s, body.Input)
+	case *proto.Envelope_Ping:
+		b.handlePing(s, body.Ping)
 	default:
 		b.log.Debug("未处理的快照消息类型", "session", s.ID())
 	}
@@ -272,7 +281,9 @@ func (b *netBridge) sendJoinOk(s *netx.Session, slot int) {
 	ok := &proto.JoinOk{
 		Slot:      uint32(slot),
 		WorldSeed: b.r.Seed(),
-		StartTick: b.r.World.Tick,
+		// 不能用 b.r.World.Tick：那个字段只在 tick goroutine 里写，
+		// 在这里读就是跨 goroutine 读正在被改的内存（-race 抓得到）。
+		StartTick: b.r.WorldTick(),
 	}
 	b.send(s, &proto.Envelope{Body: &proto.Envelope_JoinOk{JoinOk: ok}})
 }
@@ -341,6 +352,13 @@ func (b *netBridge) handleInput(s *netx.Session, msg *proto.Input) {
 		return
 	}
 
+	// 限速在锁内、去重之前：被限速的包连解析都不该做。
+	// 队形（r.inputs）是所有玩家共享的，一个坏客户端能挤掉别人。
+	if !cp.limiter.allow(time.Now()) {
+		b.mu.Unlock()
+		return
+	}
+
 	newest, buttons, changed := mergeInputFrames(frames, cp.lastInputTick, cp.hasInput)
 	if !changed {
 		// 整包都是已处理过的帧。重复送达很常见（丢包后客户端补帧），
@@ -394,12 +412,17 @@ func mergeInputFrames(frames []*proto.InputFrame, lastTick uint32, hasLast bool)
 // 两者共用同一个 helper 保证不会只改一处。
 func tickAfter(a, b uint32) bool { return int32(a-b) > 0 }
 
+// handlePing 回应 RTT 探测。
+//
+// Ping 与 Pong 都走快照通道。Ping 测的是"此刻往返多久"，补发的旧样本
+// 算出的 RTT 是过去的 RTT，比没有还糟——它会把网络变差的信号抹平。
+// 走可靠通道还会白占发窗与重传预算。
 func (b *netBridge) handlePing(s *netx.Session, msg *proto.Ping) {
 	pong := &proto.Pong{
 		ClientTimeNs: msg.ClientTimeNs,
 		ServerTimeNs: uint64(time.Now().UnixNano()),
 	}
-	b.send(s, &proto.Envelope{Body: &proto.Envelope_Pong{Pong: pong}})
+	b.sendSnap(s, &proto.Envelope{Body: &proto.Envelope_Pong{Pong: pong}})
 }
 
 // send 把消息编码后走可靠通道。
@@ -411,6 +434,20 @@ func (b *netBridge) send(s *netx.Session, env *proto.Envelope) {
 	}
 	if !s.SendReliable(data) {
 		b.log.Debug("可靠通道发送失败（窗口满或已关闭）", "session", s.ID())
+	}
+}
+
+// sendSnap 把消息编码后走快照通道。
+//
+// 失败不重试也不记 warn：快照通道本来就不保证送达，下一包接上就好。
+func (b *netBridge) sendSnap(s *netx.Session, env *proto.Envelope) {
+	data, err := proto.Marshal(env)
+	if err != nil {
+		b.log.Warn("编码失败", "session", s.ID(), "err", err)
+		return
+	}
+	if !s.SendSnapshot(data) {
+		b.log.Debug("快照通道发送失败（队列满或已关闭）", "session", s.ID())
 	}
 }
 

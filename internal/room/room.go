@@ -41,6 +41,11 @@ type Room struct {
 	peers peers
 	// peerCount 是 peers.count 的原子镜像，供外部 goroutine 读取。
 	peerCount atomic.Int32
+	// worldTick 是 World.Tick 的原子镜像，供外部 goroutine 读取。
+	//
+	// World.Tick 只在 tick 循环里写。别处要读（比如加入房间时回一个
+	// 起始 tick）必须走这里，否则就是跨 goroutine 读正在被改的内存。
+	worldTick atomic.Uint32
 
 	// joins 是等待 tick 循环处理的加入请求。
 	//
@@ -246,6 +251,7 @@ func (r *Room) tick() {
 	r.broadcast()
 
 	w.Tick++
+	r.worldTick.Store(w.Tick)
 }
 
 // subStep 推进一个物理子步。
@@ -284,3 +290,9 @@ func (r *Room) Metrics() Metrics {
 
 // Seed 返回本房间的随机种子，重放时用它复现。
 func (r *Room) Seed() int64 { return r.seed }
+
+// WorldTick 返回当前世界 tick。可并发调用。
+//
+// 这是 World.Tick 的原子镜像。直接读 r.World.Tick 会与 tick 循环的写入
+// 撞车——那个字段只在 tick goroutine 里安全。
+func (r *Room) WorldTick() uint32 { return r.worldTick.Load() }
