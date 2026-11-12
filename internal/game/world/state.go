@@ -44,6 +44,21 @@ type PlayerState struct {
 	AimDir     float64 // 朝向弧度
 	HP         float64
 
+	// —— 开火状态（每子步）——
+	//
+	// FireCooldown 是距离下次能开火还剩多少秒。0 表示随时可发。
+	// 它是纯服务端状态，不进快照：客户端自己维护按键，冷却若下发会让
+	// 客户端画出它预测不准的"哑火"。
+	FireCooldown float64
+
+	// PrevAttackHeld 是上一个 tick 的攻击键状态，用来算"按下沿"。
+	//
+	// 不能让客户端直接发"刚按下"：cmd/server/bridge.go 的 mergeInputFrames
+	// 会在整个 frames 窗口内对按键做按位或（为了捕获两包之间的短按），
+	// 那个位反映"窗口内按住过"，不是"这一帧刚按下"。单发武器若信它，
+	// 一帧会打两发。
+	PrevAttackHeld bool
+
 	// —— 温字段：每 tick 或事件时 ——
 	WeaponID     uint16
 	SkillActive  [2]uint16
