@@ -1,0 +1,91 @@
+package world
+
+// DamageTags 是伤害的词条标记。
+//
+// M2 全部为空，字段先留着是因为 §4.2 的结算顺序里"词条"是第 3 步——
+// 现在就把位置占住，M4 加暴击/吸血时不用重排流水线。
+type DamageTags struct {
+	IgnoreArmor bool
+	CanCrit     bool
+}
+
+// DamageEvent 是一次伤害结算的结果。
+//
+// 战斗系统不直接改 UI、不直接发网络包，只产出事件，由 Room 层消费：
+// 一部分搭快照的 events 字段下发，一部分走可靠通道（击杀、升级）。
+// 见 docs/combat-design-v0.1.md §4.3。
+type DamageEvent struct {
+	Src       EntityID
+	Dst       EntityID
+	Amount    float64
+	Element   Element
+	IsCrit    bool
+	IsKill    bool
+	Reflector EntityID // 非零表示反射弹幕造成
+}
+
+// ResolveDamage 是所有伤害的唯一入口。
+//
+// 任何来源——子弹、近战、技能、区域效果、反射弹幕——都必须走它。理由：
+// 后期加词条（暴击、吸血、元素抗性）只需要改这一个函数；一旦允许某条
+// 路径绕过，加词条时就会漏掉那条路径，表现为"某个技能不吃暴击"这类
+// 只有设计师能发现的不一致。
+//
+// 结算顺序（combat-design-v0.1.md §4.2）：
+//  1. 元素反应（M2 无元素表，Task 12 之后由 M6 补）
+//  2. 护甲与减伤（M2 无护甲，全为 0）
+//  3. 词条（M2 无词条）
+//  4. 应用 HP -= dmg
+//  5. 产出事件
+//  6. 死亡判定——只标记，绝不回收
+//
+// 第 6 步只标记不回收是关键：Collide 与 ApplyHits 都在遍历池，此时 Kill
+// 会改动槽位状态，导致漏遍历或重复遍历。回收统一留给 systems.Reap。
+func (w *World) ResolveDamage(src, dst EntityID, base float64, el Element, tags DamageTags) DamageEvent {
+	ev := DamageEvent{Src: src, Dst: dst, Element: el}
+
+	if base <= 0 {
+		return ev
+	}
+
+	// 目标必须是存活的怪物或玩家。玩家打玩家在 M2 不存在，但入口写成
+	// 通用形式，M6 的反射弹幕会用到。
+	dmg := base
+
+	if m := w.Monsters.Get(dst); m != nil {
+		if m.HP <= 0 {
+			// 尸体不再吃伤害：否则同 tick 多颗子弹命中会让击杀事件
+			// 重复产出，分账算两次。
+			return ev
+		}
+		m.HP -= dmg
+		if m.HP <= 0 {
+			// 钳到 0：允许为负会让客户端血条算出负宽度。
+			m.HP = 0
+			ev.IsKill = true
+		}
+		ev.Amount = dmg
+	} else if p := w.Players.Get(dst); p != nil {
+		if p.HP <= 0 {
+			return ev
+		}
+		p.HP -= dmg
+		// 承受伤害参与贡献折算（spec L134：贡献 = 伤害 + 0.5×承受）
+		p.DamageTaken += dmg
+		if p.HP <= 0 {
+			p.HP = 0
+			ev.IsKill = true
+		}
+		ev.Amount = dmg
+	} else {
+		return ev
+	}
+
+	// 贡献记在伤害来源头上。分账只在据点结束时算一次（spec L134），
+	// 这里只累加。
+	if srcP := w.Players.Get(src); srcP != nil {
+		srcP.Contribute += dmg
+	}
+
+	return ev
+}
