@@ -5,10 +5,14 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"math"
+	"math/rand"
 	"testing"
 	"time"
 
 	"koukoukongjian/internal/config"
+	"koukoukongjian/internal/game/world"
+	"koukoukongjian/internal/proto"
 )
 
 func quietLogger() *slog.Logger {
@@ -216,6 +220,99 @@ func TestNewDefaultsID(t *testing.T) {
 	}
 	// log 为 nil 时应回落到 slog.Default()，不能 panic。
 	r.log.Info("smoke")
+}
+
+// 摆靶发生在 New 里、Run 之前，World 还没被 tick goroutine 独占，
+// 这里可以直接断言。靶子应摆成圆环、血量与半径按规格填好。
+func TestNewSpawnsDummyTargets(t *testing.T) {
+	cfg := testConfig()
+	r := New(cfg, quietLogger(), Options{ID: "dummies", Seed: 42, DummyTargets: 4})
+	w := r.World
+
+	if got := w.Monsters.Len(); got != 4 {
+		t.Fatalf("怪物数 = %d，期望 4", got)
+	}
+
+	cx := w.Terrain.WorldWidth() / 2
+	cy := w.Terrain.WorldHeight() / 2
+	w.Monsters.Each(func(id world.EntityID, m *world.MonsterState) bool {
+		if m.HP != 50 || m.MaxHP != 50 {
+			t.Errorf("怪物 %v 血量 = %v/%v，期望 50/50", id, m.HP, m.MaxHP)
+		}
+		if m.Radius != 0.4 {
+			t.Errorf("怪物 %v 半径 = %v，期望 0.4", id, m.Radius)
+		}
+		if m.TypeID != 1 {
+			t.Errorf("怪物 %v TypeID = %d，期望 1", id, m.TypeID)
+		}
+		dx := m.Pos.X - cx
+		dy := m.Pos.Y - cy
+		d := math.Sqrt(dx*dx + dy*dy)
+		// 圆环半径 6 m，允许 0.1 m 容差（浮点）。
+		if d < 5.9 || d > 6.1 {
+			t.Errorf("怪物 %v 距中心 = %.3f，期望在 6±0.1 圆环上（中心 %.1f,%.1f）", id, d, cx, cy)
+		}
+		return true
+	})
+}
+
+// DummyTargets 摆靶 + HasAim=false 持续开火 + 随机游走（复刻端到端 bot
+// 的输入形态），必须能把靶子打掉——这是 Task 11 端到端验证的房间级
+// 守护：bot 路径上任何一环（自动瞄准→开火→命中→回收→快照移除）断掉，
+// 端到端"清不完 4 靶"的现象都会先在这里复现。
+// seed 用 42 与端到端命令一致，方便对照。
+func TestDummyTargetsAutoAimKills(t *testing.T) {
+	var monsterIDs []world.EntityID
+	cfg := testConfig()
+	r := New(cfg, quietLogger(), Options{ID: "dummykill", Seed: 42, DummyTargets: 4})
+	w := r.World
+	w.Monsters.Each(func(id world.EntityID, m *world.MonsterState) bool {
+		monsterIDs = append(monsterIDs, id)
+		return true
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		r.Run(ctx)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Errorf("房间 dummykill 未在 2 秒内退出")
+		}
+	})
+
+	res, sink := joinPlayer(t, r, "shooter")
+
+	// 玩家出生点与靶环的相对位置先打出来，供对照端到端日志。
+	p := r.spawnPoint(res.Slot)
+	t.Logf("玩家出生点 = (%.2f, %.2f)，怪物数 = %d，ID = %v", p.X, p.Y, len(monsterIDs), monsterIDs)
+
+	// HasAim=false：走服务端自动瞄准。持续按住攻击，同时随机方向移动
+	// 复刻 bot 的游走（circle=false 每帧换向）。
+	rng := rand.New(rand.NewSource(42))
+	for seq := uint32(1); seq <= 210; seq++ {
+		ang := rng.Float64() * 2 * math.Pi
+		r.SendInput(res.Slot, InputCommand{
+			Seq: uint16(seq), HasAim: false, Buttons: ButtonAttack,
+			Move: world.V(math.Cos(ang), math.Sin(ang)),
+		})
+	}
+
+	// 等 Removes 里出现其中一只靶（击杀后 Reap 移出快照）。50 血 10 伤
+	// 5 发一只，摆靶后 1 秒内就该见血，给 12 秒余量。
+	waitSnapshot(t, sink, 12*time.Second, "靶子出现在 Removes 里", func(s *proto.Snapshot) bool {
+		for _, id := range monsterIDs {
+			if removedContains(s, uint32(id)) {
+				return true
+			}
+		}
+		return false
+	})
 }
 
 // Run 返回后 stopped 必须为真，否则 Stop 会重复 close。

@@ -39,6 +39,8 @@ func run() error {
 		logLevel = flag.String("log-level", "", "覆盖配置里的日志级别")
 		bind     = flag.String("bind", "", "覆盖配置里的监听地址，如 0.0.0.0:27015")
 		noNet    = flag.Bool("no-net", false, "不启动网络层，只跑 tick 循环（M0 冒烟用）")
+
+		dummyTargets = flag.Int("dummy-targets", 0, "开局摆放的静止靶数量（端到端验证用，0 表示不摆）")
 	)
 	flag.Parse()
 
@@ -74,7 +76,7 @@ func run() error {
 		s = nowSeed()
 	}
 
-	r := room.New(cfg, log, room.Options{ID: "room-1", Seed: s})
+	r := room.New(cfg, log, room.Options{ID: "room-1", Seed: s, DummyTargets: *dummyTargets})
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

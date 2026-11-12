@@ -40,6 +40,9 @@ func run() error {
 		inputHz  = flag.Int("input-hz", 30, "输入发送频率")
 		circle   = flag.Bool("circle", true, "绕圈移动（否则随机方向）")
 		verbose  = flag.Bool("v", false, "打印每帧快照统计")
+
+		attack  = flag.Bool("attack", false, "一直按住攻击键")
+		holdAim = flag.Bool("hold-aim", true, "是否给瞄准方向（false 则置零，触发服务端自动瞄准）")
 	)
 	flag.Parse()
 
@@ -67,7 +70,7 @@ func run() error {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
-			err := runBot(ctx, *addr, botName, idx, *inputHz, *circle, *verbose,
+			err := runBot(ctx, *addr, botName, idx, *inputHz, *circle, *attack, *holdAim, *verbose,
 				&totalSnap, &totalRecv)
 			if err != nil {
 				fmt.Printf("[%s] 失败：%v\n", botName, err)
@@ -98,7 +101,7 @@ type bot struct {
 	tick atomic.Uint32
 }
 
-func runBot(ctx context.Context, addr, name string, idx, inputHz int, circle, verbose bool,
+func runBot(ctx context.Context, addr, name string, idx, inputHz int, circle, attack, holdAim, verbose bool,
 	snaps, recv *atomic.Uint64) error {
 
 	cfg := netx.DefaultClientConfig()
@@ -129,7 +132,7 @@ func runBot(ctx context.Context, addr, name string, idx, inputHz int, circle, ve
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		b.sendInputs(ctx, c, inputHz, circle)
+		b.sendInputs(ctx, c, inputHz, circle, attack, holdAim)
 	}()
 	go func() {
 		defer wg.Done()
@@ -238,7 +241,7 @@ const inputWindow = 3
 //
 // 每包带最近 inputWindow 帧（按 tick 升序），服务器按 tick 去重，取最新
 // 一帧作移动意图，窗口内所有 buttons 做按位或。这样一包丢失不会丢意图。
-func (b *bot) sendInputs(ctx context.Context, c *netx.Client, hz int, circle bool) {
+func (b *bot) sendInputs(ctx context.Context, c *netx.Client, hz int, circle, attack, holdAim bool) {
 	if hz <= 0 {
 		hz = 30
 	}
@@ -278,12 +281,24 @@ func (b *bot) sendInputs(ctx context.Context, c *netx.Client, hz int, circle boo
 			ax, ay = mx, my
 		}
 
+		if !holdAim {
+			// 不给方向：aim_x/aim_y 置零，服务端据此走自动瞄准。
+			// 注意不能用"方向等于 0 弧度"来表达"没给方向"——
+			// 0 是合法朝向（正 +X），两者必须分开表达。
+			ax, ay = 0, 0
+		}
+		var buttons uint32
+		if attack {
+			buttons = 1 // room.ButtonAttack
+		}
+
 		// 左移窗口，把新帧放进最后一格。
 		copy(window[:], window[1:])
 		window[inputWindow-1] = &proto.InputFrame{
 			Tick:  tick,
 			MoveX: mx, MoveY: my,
 			AimX: ax, AimY: ay,
+			Buttons: buttons,
 		}
 
 		// 只发已经填上的帧：客户端刚启动时前两包不满 3 帧。

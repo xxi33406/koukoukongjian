@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"math"
 	"sync/atomic"
 	"time"
 
@@ -88,6 +89,12 @@ type leaveRequest struct {
 type Options struct {
 	ID   string
 	Seed int64
+	// DummyTargets 是开局摆放的静止靶数量，仅供端到端验证用。
+	//
+	// 正常对局里怪物由波次系统生成（M3）。M2 没有波次，没有靶子就
+	// 无法从客户端看到任何战斗反馈。摆在 New 而不是 Run 里：
+	// Run 一旦走起来，World 就归 tick goroutine 独占。
+	DummyTargets int
 }
 
 // New 创建一个房间。
@@ -114,7 +121,37 @@ func New(cfg *config.Config, log *slog.Logger, opts Options) *Room {
 		done:         make(chan struct{}),
 	}
 	r.World.Grid.SetBruteThreshold(cfg.Space.SpatialBruteThreshold)
+	if opts.DummyTargets > 0 {
+		spawnDummyTargets(r.World, opts.DummyTargets)
+	}
 	return r
+}
+
+// spawnDummyTargets 在场地中心周围摆一圈静止怪，供 M2 端到端验证。
+//
+// 排成圆环而不是随机撒：随机撒可能撒到玩家出生点所在的 2×2 方阵里，
+// 于是"打中脚边的怪"与"打中远处的怪"在日志上看起来一样，查不出
+// 是射程问题还是碰撞问题。
+//
+// 半径 6 m：玩家出生在中心方阵（间距 3 m），6 m 保证靶子在方阵外圈，
+// 且落在步枪射程内（20 m/s × 1.2 s = 24 m）。
+func spawnDummyTargets(w *world.World, n int) {
+	const ringRadius = 6.0
+	cx := w.Terrain.WorldWidth() / 2
+	cy := w.Terrain.WorldHeight() / 2
+
+	for i := 0; i < n; i++ {
+		ang := 2 * math.Pi * float64(i) / float64(n)
+		_, m := w.Monsters.Spawn()
+		if m == nil {
+			return // 怪物池满
+		}
+		m.Pos = world.V(cx+math.Cos(ang)*ringRadius, cy+math.Sin(ang)*ringRadius)
+		m.HP = 50
+		m.MaxHP = 50
+		m.Radius = 0.4
+		m.TypeID = 1
+	}
 }
 
 // ErrAlreadyRunning 表示已有 tick 循环在跑。
