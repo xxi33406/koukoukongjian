@@ -44,7 +44,11 @@ type PlayerState struct {
 	AimDir     float64 // 朝向弧度
 	HP         float64
 
-	// —— 开火状态（每子步）——
+	// —— 开火状态（每 tick 在子步循环外判定一次）——
+	//
+	// 两个变量的更新频率不同，别当成一组：FireCooldown 每 tick 减一个
+	// tick 的量（不是每子步），PrevAttackHeld 每 tick 覆写一次。放在一起
+	// 是因为它们只服务于同一次开火决策。
 	//
 	// FireCooldown 是距离下次能开火还剩多少秒。0 表示随时可发。
 	// 它是纯服务端状态，不进快照：客户端自己维护按键，冷却若下发会让
