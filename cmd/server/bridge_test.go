@@ -202,3 +202,26 @@ func TestTickAfter(t *testing.T) {
 		}
 	}
 }
+
+// TestMergeInputFramesTracksAimPresence 验证"有没有给方向"跟着最新帧走。
+//
+// 不能拿上一帧的方向补上：客户端松手的那一帧起就该由自动瞄准接管，
+// 沿用旧方向会让角色一直瞄着一个已经没在瞄的角落。
+func TestMergeInputFramesTracksAimPresence(t *testing.T) {
+	// 最新帧没给方向、上一帧给了：HasAim 必须跟最新帧走。
+	frames := []*proto.InputFrame{
+		{Tick: 10, AimX: 1000, AimY: 0},
+		{Tick: 11, AimX: 0, AimY: 0},
+	}
+	newest, _, changed := mergeInputFrames(frames, 9, true)
+	if !changed {
+		t.Fatal("有新帧却返回 changed=false")
+	}
+	if newest.Tick != 11 {
+		t.Fatalf("取到 tick=%d，期望最新的 11", newest.Tick)
+	}
+	hasAim := newest.AimX != 0 || newest.AimY != 0
+	if hasAim {
+		t.Fatal("最新帧没给方向，却判成给了")
+	}
+}

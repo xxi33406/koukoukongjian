@@ -35,6 +35,11 @@ type InputCommand struct {
 	Move world.Vec2
 	// Aim 是瞄准角度（弧度）。
 	Aim float64
+	// HasAim 表示客户端这一帧是否给了瞄准方向。
+	//
+	// 不能靠 Aim==0 判断：0 是合法朝向（正 +X）。必须单独传一个布尔，
+	// 否则玩家朝正右方瞄准时会被当成"没瞄准"，自动瞄准夺走控制权。
+	HasAim bool
 	// Buttons 是当前按住的按键位掩码。
 	Buttons uint32
 }

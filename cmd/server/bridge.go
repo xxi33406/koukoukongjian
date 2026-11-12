@@ -373,9 +373,12 @@ func (b *netBridge) handleInput(s *netx.Session, msg *proto.Input) {
 
 	// 量化解码必须在网桥做，不能进 room——×1000 是协议约定，房间不该知道。
 	cmd := room.InputCommand{
-		Seq:     uint16(newest.Tick),
-		Move:    systems.DecodeMove(newest.MoveX, newest.MoveY),
-		Aim:     systems.DecodeAim(newest.AimX, newest.AimY, 0),
+		Seq:  uint16(newest.Tick),
+		Move: systems.DecodeMove(newest.MoveX, newest.MoveY),
+		Aim:  systems.DecodeAim(newest.AimX, newest.AimY, 0),
+		// 两个分量都为 0 才算"没给方向"。只有一个是 0 是合法的
+		// 正右/正上瞄准。
+		HasAim:  newest.AimX != 0 || newest.AimY != 0,
 		Buttons: buttons,
 	}
 	b.r.SendInput(slot, cmd)

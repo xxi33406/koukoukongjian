@@ -95,13 +95,32 @@ func TestDecodeAimAxes(t *testing.T) {
 func TestApplyInputSetsIntentAndAim(t *testing.T) {
 	var p world.PlayerState
 	p.State = world.PlayerAlive
-	ApplyInput(&p, world.V(0.5, 0), 1.0)
+	ApplyInput(&p, world.V(0.5, 0), 1.0, true)
 
 	if !approx(p.MoveIntent.X, 0.5, 1e-9) {
 		t.Fatalf("MoveIntent.X = %f，期望 0.5", p.MoveIntent.X)
 	}
 	if !approx(p.AimDir, 1.0, 1e-9) {
 		t.Fatalf("AimDir = %f，期望 1.0", p.AimDir)
+	}
+}
+
+// TestApplyInputKeepsAimWhenAbsent 验证客户端没给方向时保留原朝向。
+//
+// 直接把 AimDir 写成 0 会让"玩家没在瞄"和"玩家瞄正 +X"变成同一个状态，
+// 自动瞄准再也分不出该不该接管。
+func TestApplyInputKeepsAimWhenAbsent(t *testing.T) {
+	var p world.PlayerState
+	p.State = world.PlayerAlive
+	p.AimDir = 2.0
+
+	ApplyInput(&p, world.V(1, 0), 0, false)
+
+	if !approx(p.AimDir, 2.0, 1e-9) {
+		t.Fatalf("没给方向时 AimDir = %f，期望保持 2.0", p.AimDir)
+	}
+	if !approx(p.MoveIntent.X, 1.0, 1e-9) {
+		t.Fatalf("MoveIntent.X = %f，期望 1.0", p.MoveIntent.X)
 	}
 }
 

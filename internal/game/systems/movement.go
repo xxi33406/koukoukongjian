@@ -71,9 +71,19 @@ func DecodeAim(x, y int32, keep float64) float64 {
 // 只设置意图，不动位置——位置由 Integrate 在子步里推进。分开的好处是
 // 一次输入可以被多个子步看到（20Hz 输入、60Hz 模拟时，一个输入帧要作用
 // 于三个子步），而位置积分必须按子步进行才不会让动量跳变。
-func ApplyInput(p *world.PlayerState, move world.Vec2, aim float64) {
+//
+// hasAim=false 表示客户端这一帧没给方向（aim 向量全零），此时保留原朝向：
+// 自动瞄准要靠"玩家没瞄"这个信号去锁最近的怪，而 0 是合法朝向（正 +X），
+// 不能拿它当"没瞄"。
+//
+// 不采用"调用方先存旧 AimDir、调完再还原"的写法：那种写法要求每个调用点
+// 都记得还原，漏一处就是"某条路径下自动瞄准失效"，而且症状只在没给方向时
+// 出现，很难联想到这里。
+func ApplyInput(p *world.PlayerState, move world.Vec2, aim float64, hasAim bool) {
 	p.MoveIntent = move
-	p.AimDir = aim
+	if hasAim {
+		p.AimDir = aim
+	}
 }
 
 // Integrate 按当前意图推进一个子步的位置。

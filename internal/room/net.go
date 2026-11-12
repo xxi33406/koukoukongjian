@@ -211,7 +211,7 @@ func (r *Room) drainInputs() {
 				}
 				ent := r.World.Players.Get(p.id)
 				if ent != nil {
-					systems.ApplyInput(ent, p.lastInput.Move, p.lastInput.Aim)
+					systems.ApplyInput(ent, p.lastInput.Move, p.lastInput.Aim, p.lastInput.HasAim)
 					// 回显用的序号也要落到实体上，快照才能告诉客户端
 					// "你的第 N 条输入我已处理"。
 					ent.LastAckedInput = p.lastInputSeq
