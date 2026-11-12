@@ -207,8 +207,12 @@ func TestTickAfter(t *testing.T) {
 //
 // 不能拿上一帧的方向补上：客户端松手的那一帧起就该由自动瞄准接管，
 // 沿用旧方向会让角色一直瞄着一个已经没在瞄的角落。
+//
+// 这条守的是 mergeInputFrames 的取值契约，不是 HasAim 字段本身——
+// 后者由 internal/room 的 TestInputCarriesAimIntent 保证，那条在字段
+// 加进去之前确实是红的。
 func TestMergeInputFramesTracksAimPresence(t *testing.T) {
-	// 最新帧没给方向、上一帧给了：HasAim 必须跟最新帧走。
+	// 最新帧没给方向、更早的帧给了：必须取最新帧。
 	frames := []*proto.InputFrame{
 		{Tick: 10, AimX: 1000, AimY: 0},
 		{Tick: 11, AimX: 0, AimY: 0},
@@ -220,8 +224,20 @@ func TestMergeInputFramesTracksAimPresence(t *testing.T) {
 	if newest.Tick != 11 {
 		t.Fatalf("取到 tick=%d，期望最新的 11", newest.Tick)
 	}
-	hasAim := newest.AimX != 0 || newest.AimY != 0
-	if hasAim {
-		t.Fatal("最新帧没给方向，却判成给了")
+	// 若 mergeInputFrames 哪天改成"取窗口内最后一个非零方向"（为了实现
+	// "松手后仍朝原方向"这类需求很容易顺手加），这里会红。
+	if newest.AimX != 0 || newest.AimY != 0 {
+		t.Fatal("最新帧没给方向，却取到了更早的非零方向")
+	}
+
+	// 反方向：最新帧给了方向、更早的帧没有。若实现改成"取第一个非零"，
+	// 上面那条仍会过，这条会红。两条一起才能钉住"取最新的，且不补"。
+	gaveAim := []*proto.InputFrame{
+		{Tick: 20, AimX: 0, AimY: 0},
+		{Tick: 21, AimX: 0, AimY: -1000},
+	}
+	newest2, _, _ := mergeInputFrames(gaveAim, 19, true)
+	if newest2.AimX == 0 && newest2.AimY == 0 {
+		t.Fatal("最新帧给了方向（正 -Y），却取到了更早的空帧")
 	}
 }
