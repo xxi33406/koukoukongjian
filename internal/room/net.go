@@ -125,13 +125,15 @@ func (r *Room) handleJoin(req JoinRequest) {
 	// 出生点：按座位号摊在地图中心的 2×2 小方阵里，间距 3 米——比玩家
 	// 直径（约 0.6 米）大得多，不会互相卡住也不会立刻重叠。M3 接入真实
 	// 地图后改成按据点出生。
-	p.Pos = world.V(
-		float64(slot%2)*3.0-1.5+r.World.Terrain.WorldWidth()/2,
-		float64(slot/2)*3.0-1.5+r.World.Terrain.WorldHeight()/2,
-	)
+	p.Pos = r.spawnPoint(slot)
 	p.State = world.PlayerAlive
 	p.MaxHP = 100
 	p.HP = 100
+	// 出生就带默认武器。不设的话 WeaponID 是零值，
+	// systems.WeaponByID(0) 返回 ok=false，Fire 直接返回 false——
+	// 表现为"服务器一切正常、客户端按键有反馈、就是一发子弹都没有"，
+	// 而且日志里没有任何异常。
+	p.WeaponID = systems.DefaultWeaponID
 
 	pp := &peer{
 		slot:    slot,
@@ -156,6 +158,20 @@ func (r *Room) handleJoin(req JoinRequest) {
 		Seed:      r.seed,
 		StartTick: r.World.Tick,
 	}
+}
+
+// spawnPoint 是第 slot 号座位的出生点。
+//
+// 抽成方法而不是内联：测试要往"玩家正右方 3 m"摆靶子，就得先知道出生点。
+// 让测试自己再算一遍同一套公式，等于世界尺寸一改就有一半用例以"怪物血量
+// 没下降"的形式静默失败——那是最难查的一类失败。
+func (r *Room) spawnPoint(slot int) world.Vec2 {
+	w := r.World.Terrain.WorldWidth()
+	h := r.World.Terrain.WorldHeight()
+	return world.V(
+		float64(slot%2)*3.0-1.5+w/2,
+		float64(slot/2)*3.0-1.5+h/2,
+	)
 }
 
 // drainLeaves 处理所有排队的离开请求。
@@ -202,6 +218,8 @@ func (r *Room) drainInputs() {
 			}
 			pp.lastInput = pi.cmd
 			pp.lastInputSeq = pi.cmd.Seq
+			pp.hasAim = pi.cmd.HasAim
+			pp.buttons = pi.cmd.Buttons
 			pp.queued++
 		default:
 			// 队列空了，把最新输入应用到实体上。

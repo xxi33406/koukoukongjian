@@ -15,25 +15,7 @@ import (
 // "请求能被 tick 循环及时消费"，绕开循环测不出这一半。
 func startRoom(t *testing.T, cfgName string) (*Room, context.CancelFunc) {
 	t.Helper()
-	cfg := testConfig()
-	r := New(cfg, quietLogger(), Options{ID: cfgName, Seed: 7})
-
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		r.Run(ctx)
-	}()
-
-	t.Cleanup(func() {
-		cancel()
-		select {
-		case <-done:
-		case <-time.After(2 * time.Second):
-			t.Error("房间没在 2 秒内退出")
-		}
-	})
-	return r, cancel
+	return startRoomWith(t, cfgName, nil)
 }
 
 // joinPlayer 加入一个玩家，返回结果和 sink 读端。

@@ -60,6 +60,9 @@ type Room struct {
 	inputs chan peerInput
 	// leaves 是等待处理的离开请求。
 	leaves chan leaveRequest
+	// events 是这一 tick 攒下的伤害/击杀事件，M2 只攒不发（快照带上它
+	// 属于 M3 的 UI 反馈）。每个 tick 开头用 [:0] 清空以复用底层数组。
+	events []world.DamageEvent
 	// nextSnapshot 是本 tick 生成好、待网络层取走的快照。
 	// 这里不用它——快照直接写进每个 peer 的 sink。保留字段会误导，故无。
 
@@ -229,6 +232,9 @@ func (r *Room) tick() {
 
 	// 0. 网络请求。必须在模拟之前处理，这样新玩家第一帧就有实体、
 	//    离开的玩家不会在最后一帧还收到快照。
+	//    events 用 [:0] 清空而不是 = nil：前者复用底层数组，后者每 tick
+	//    分配一次，20Hz 下就是每秒 20 次无谓分配。
+	r.events = r.events[:0]
 	r.drainJoins()
 	r.drainLeaves()
 	r.drainInputs()
@@ -241,13 +247,13 @@ func (r *Room) tick() {
 		r.subStep(sub)
 	}
 
-	// 4. 生成（每 tick，不在子步内 —— 否则一 tick 生成 subSteps 倍）
-	//    留给 M3。
+	// 3. 生成：开火属于生成，放在子步循环之外。
+	// 理由见 combat-design-v0.1.md:77——发射频率以 tick 为单位，
+	// 放子步里会让一 tick 生成三倍子弹（§1.2 反例 4）。
+	r.fire()
 
-	// 5. 世界级结算：迷雾、分账、超时判定
-	//    留给 M3/M4。
-
-	// 6. 快照编码与下发
+	// 4. 世界级结算：M2 只有事件累积（r.events 已在子步里攒好）
+	// 5. 编码快照
 	r.broadcast()
 
 	w.Tick++
@@ -262,13 +268,48 @@ func (r *Room) subStep(sub int) {
 	w := r.World
 	dt := r.subDt
 
-	// 输入 → 移动。M1 只有这两个系统。
-	//
-	// 注意 Integrate 用的是 subDt 而不是真实耗时：真实耗时每次都不同，
-	// 会让同一份输入在不同机器上算出不同位置，回放与预测校正都会失效。
+	// 2.1 应用输入：drainInputs 已在 tick 开头把意图写进实体。
+	// 输入不在这里读——它按 tick 到达，而这里是 60Hz，重复应用会把
+	// 消耗型逻辑扣三倍（combat-design-v0.1.md §1.2 反例 5）。
+
+	// 2.2 AI 决策：M2 不做，怪物是静止靶（M3 补）。
+
+	// 2.3 移动积分
 	w.Players.Each(func(_ world.EntityID, p *world.PlayerState) bool {
 		systems.Integrate(p, dt)
 		return true
+	})
+	systems.IntegrateBullets(w, dt)
+
+	// 2.4 碰撞与命中：只产出命中列表，不改任何血量。
+	// 分两步是为了让"谁该掉血"与"实际掉多少"各自可测——合在一起时，
+	// 判定写错与伤害公式写错的表现完全一样。
+	hits := systems.Collide(w)
+
+	// 2.5 伤害结算：唯一入口，死亡只标记不回收
+	r.events = append(r.events, systems.ApplyHits(w, hits)...)
+
+	// 2.6 死亡清理：回收 + 世代 +1
+	r.events = append(r.events, systems.Reap(w)...)
+}
+
+// fire 让每个在座玩家按当前按键尝试开火。
+//
+// dt 用一个 tick 的时长而不是真实耗时：模拟必须可复现，真实耗时每个
+// tick 都不同（AGENTS.md §2.6）。
+//
+// 遍历用 peers.each 而不是 Players.Each：需要每个玩家的按键状态，
+// 那存在 peer 上而不是实体上——按键是输入信息，不是世界状态。
+func (r *Room) fire() {
+	tickDt := 1.0 / float64(r.cfg.Server.TickRate)
+
+	r.peers.each(func(p *peer) {
+		ent := r.World.Players.Get(p.id)
+		if ent == nil {
+			return
+		}
+		held := p.buttons&ButtonAttack != 0
+		systems.Fire(r.World, p.id, ent, held, p.hasAim, tickDt)
 	})
 }
 

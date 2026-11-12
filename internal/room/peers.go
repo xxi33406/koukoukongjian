@@ -36,6 +36,14 @@ type peer struct {
 	// lastInputSeq 记录最后一次收到的输入序号，回显给客户端做预测校正。
 	lastInputSeq uint16
 
+	// hasAim 是最近一条输入是否带了瞄准方向。
+	// 为 false 时要走自动瞄准——注意不能靠 Aim==0 判断，
+	// 0 是合法的朝向（正 +X）。
+	hasAim bool
+
+	// buttons 是最近一条输入的按键位掩码（"当前按住"，不是"本帧按下"）。
+	buttons uint32
+
 	// queued 是攒下来的输入条数，用于观测"客户端发得太快"。
 	queued int
 	// dropped 是因为 sink 满而丢掉的快照数。
