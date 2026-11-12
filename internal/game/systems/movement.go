@@ -18,7 +18,8 @@ import (
 // PlayerSpeed 是玩家的移动速度（米/秒）。
 //
 // M1 先写死成常量：这一阶段的验收目标是"网络闭环能跑通"，不是移动手感。
-// 等 M2 做战斗核心时会挪进 config，和武器、技能参数放到一起调。
+// M2 实际没有挪进 config：武器参数按拍板硬编码在 weapons.go 常量表里，
+// M2 只做机制验证不做手感调参，等进入调参阶段（M5）再把两者一起挪进 config。
 const PlayerSpeed = 6.0
 
 // MaxInputMagnitude 是摇杆输入的长度上限，对应 proto 里 ×1000 的量化。
