@@ -35,6 +35,12 @@ func TestWeaponTableHasBothFireModes(t *testing.T) {
 func TestWeaponCooldownNotBelowOneTick(t *testing.T) {
 	// 冷却低于一个 tick(50ms) 时，Fire 必须在一帧里补发多发，
 	// 否则实际射速被静默压到 20 发/秒。
+	//
+	// 下限定 0.02 而不是一个 tick(0.05) 是刻意的：0.02 正是
+	// TestFireCatchesUpWhenCooldownBelowTick 覆盖的"极短冷却"场景，
+	// 它的实际射速会略低于理论值（补发受 -dt 下界压制，见计划 §9），
+	// 这是已接受的代价。这里守的是比那更荒诞的值——真出现时一帧要
+	// 补发几十发。现有两把枪 0.15 / 0.6 都远离这条线。
 	for _, w := range WeaponTable {
 		if w.Cooldown < 0.02 {
 			t.Fatalf("武器 %q 冷却 %v 过小，Fire 的补发循环会打出成百上千发", w.Name, w.Cooldown)

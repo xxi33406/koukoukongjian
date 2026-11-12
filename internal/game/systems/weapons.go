@@ -31,8 +31,8 @@ type Weapon struct {
 
 // 武器 ID。数值写进协议与存档，只能追加不能改号。
 const (
-	WeaponRifle     uint16 = 1 // 连发
-	WeaponHandCanon uint16 = 2 // 单发
+	WeaponRifle      uint16 = 1 // 连发
+	WeaponHandCannon uint16 = 2 // 单发
 )
 
 // WeaponTable 是全部武器定义。
@@ -54,8 +54,8 @@ var WeaponTable = []Weapon{
 		Element:     world.ElementNone,
 	},
 	{
-		ID:          WeaponHandCanon,
-		Name:        "hand_canon",
+		ID:          WeaponHandCannon,
+		Name:        "hand_cannon",
 		Cooldown:    0.6,
 		AutoFire:    false,
 		BulletSpeed: 26,
