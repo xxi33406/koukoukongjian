@@ -263,3 +263,24 @@ func TestIntegrateFreeAreaUnchanged(t *testing.T) {
 		t.Errorf("空地上 Pos.X = %.3f, 期望 %.3f（行为必须与 M2 完全一致）", p.Pos.X, want)
 	}
 }
+
+func TestIntegrateDiagonalFreeAreaMatchesAnalytic(t *testing.T) {
+	// 斜向空地移动的扫掠回归：分段等长且方向恒定时，位移应逐分量等于
+	// 解析值。没有它，将来改动 CircleFree 或切段逻辑（比如把切段改短）
+	// 造成的斜向速度损失不会被任何测试抓到（x 向直线用例测不出来）。
+	w := newSystemsWorld(t, 1) // 全空地
+	_, p := w.Players.Spawn()
+	p.Pos = world.V(10, 10)
+	p.State = world.PlayerAlive
+
+	dir := world.V(1, 1).Normalized()
+	p.MoveIntent = dir
+	Integrate(p, 0.5, w.Terrain)
+
+	wantX := 10 + PlayerSpeed*0.5*dir.X
+	wantY := 10 + PlayerSpeed*0.5*dir.Y
+	if !approx(p.Pos.X, wantX, 1e-9) || !approx(p.Pos.Y, wantY, 1e-9) {
+		t.Errorf("斜向空地位移 = (%.6f, %.6f)，解析值 (%.6f, %.6f)",
+			p.Pos.X, p.Pos.Y, wantX, wantY)
+	}
+}
