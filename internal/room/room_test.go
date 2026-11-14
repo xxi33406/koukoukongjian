@@ -19,6 +19,49 @@ func quietLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
 
+// TestNewMapgenFailDegradesNotPanic prompt 裁定：mapgen 失败时 room.New
+// 记警告并降级为无图世界（HasMap=false），不 panic。10×10 的图连一个
+// 半径 5 的据点都放不下，Generate 必返 error。
+func TestNewMapgenFailDegradesNotPanic(t *testing.T) {
+	cfg := testConfig()
+	cfg.World.TerrainWidth = 10
+	cfg.World.TerrainHeight = 10
+	// mapgen 失败不该带崩整个房间：世界降级成 M2 全空地，老路径照跑。
+	var r *Room
+	func() {
+		defer func() {
+			if p := recover(); p != nil {
+				t.Fatalf("room.New 在 mapgen 失败时 panic: %v", p)
+			}
+		}()
+		r = New(cfg, quietLogger(), Options{ID: "degrade", Seed: 3})
+	}()
+	if r.World.HasMap {
+		t.Error("降级世界 HasMap 应为 false")
+	}
+	if len(r.World.Hubs) != 0 {
+		t.Errorf("降级世界 Hubs 应为空，实际 %d 个", len(r.World.Hubs))
+	}
+	total := int(r.World.Terrain.Width()) * int(r.World.Terrain.Height())
+	if got := r.World.Terrain.WalkableCount(); got != total {
+		t.Errorf("降级世界应恢复全空地：可走格 %d / %d（残留墙 %d）", got, total, total-got)
+	}
+	// 降级世界仍然要能起 tick 循环（M2 行为短路waves/ai/fog）。
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		r.Run(ctx)
+		close(done)
+	}()
+	time.Sleep(80 * time.Millisecond)
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("降级世界的 Run 未随 ctx 取消返回")
+	}
+}
+
 func testConfig() *config.Config {
 	// HubCount=0 关地图：room 层既有测试断言 M2 全空地行为
 	// （出生点、靶位、移动），生成的墙会改变这些几何前提。

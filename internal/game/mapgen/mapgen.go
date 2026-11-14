@@ -1,17 +1,20 @@
 // Package mapgen 依据 config 与世界 RNG 生成灰盒第一关：
-// 全墙底板 + 6~8 个圆形据点空地 + 2 格宽走廊（Prim MST + 冗余边）。
+// 全墙底板 + HubCount 个圆形据点空地 + 2 格宽走廊（Prim MST + 冗余边）。
+// 据点放不满时降级保留能放下的部分（撒点重试 200 次上限），0 个才报错。
 //
 // 回放一致性三原则：
 //  1. 所有随机数走 w.RandIntn/RandFloat64（rngCalls 计数完整）；
 //  2. 排序比较用 (distSq, fromIdx, toIdx) 稳定 key，浮点并列不出歧义；
 //  3. 撒点重试与整体重开是确定性循环——同种子同调用序列，结果唯一。
 //
-// mapgen 只 import world（Vec2/Terrain）；world.NewWorld 反向调用 Generate，
-// 这是分层规则里唯一允许的 world→game 子包依赖（无环，Task 3 验证）。
+// mapgen 只 import world（Vec2/Terrain/Hub）。Generate 由编排层
+// internal/room 在 NewWorld 之后调用——world 反向调 mapgen 会构成
+// import cycle（编译器拒绝），room→mapgen→world 无环。
 package mapgen
 
 import (
 	"fmt"
+	"log/slog"
 	"math"
 	"sort"
 
@@ -33,26 +36,45 @@ const (
 )
 
 // Generate 在 w.Terrain 上生成地图，并在 w.Hubs / w.HasMap 上落运行时数据。
+//
+// Generate 独占 w.Terrain：无论成功、降级还是失败，返回时 Terrain 要么是
+// 完整成品图，要么恢复成全空地——绝不把半成品墙留在世界里。失败/哨兵
+// 路径 HasMap=false，调用方据此短路波次/AI/迷雾。
 func Generate(w *world.World, cfg *config.Config) (*Result, error) {
+	tr := w.Terrain
+	W, H := int(tr.Width()), int(tr.Height())
+
 	if cfg.Map.HubCount == 0 {
-		// 哨兵：测试用空白世界——不填墙、不生成据点。
-		// HasMap=false 时 waves/ai/fog 的短路依赖 Task 6/7/8 实现并在此注明。
+		// 哨兵：测试用空白世界——不填墙、不生成据点。恢复全空地而不是
+		// "不动 Terrain"：Generate 对 Terrain 的契约是"要么成品要么空白"，
+		// 留着调用方预先弄脏的格会让降级世界的地形状态不可预测。
+		tr.FillAll(world.TileFloor)
 		w.HasMap = false
 		w.Hubs = nil
+		w.SpawnHub = 0
 		return &Result{}, nil
 	}
 
-	tr := w.Terrain
-	W, H := int(tr.Width()), int(tr.Height())
 	cell := tr.CellSize()
 	hubR := cfg.Map.HubRadiusCells
 	corrW := cfg.Map.CorridorWidth
 
+	// 图小到连一个据点（半径 hubR + 1 格边距）都摆不下时直接失败：
+	// 再往下走撒点循环的 RandIntn(W-2*margin) 会因 n<=0 panic。
+	if margin := hubR + 1; W < 2*margin+1 || H < 2*margin+1 {
+		tr.FillAll(world.TileFloor)
+		w.Hubs = nil
+		w.SpawnHub = 0
+		w.HasMap = false
+		return nil, fmt.Errorf("mapgen: 图 %dx%d 放不下任何半径 %d 的据点（需 ≥%d）",
+			W, H, hubR, 2*margin+1)
+	}
+
 	for retry := 0; retry < maxLayoutRetries; retry++ {
 		tr.FillAll(world.TileWall)
 
-		centers, ok := placeHubs(w, cfg, W, H)
-		if !ok {
+		centers, placed := placeHubs(w, cfg, W, H)
+		if len(centers) == 0 {
 			continue
 		}
 
@@ -87,16 +109,33 @@ func Generate(w *world.World, cfg *config.Config) (*Result, error) {
 		w.Hubs = hubs
 		w.SpawnHub = 0
 		w.HasMap = true
+		if placed < cfg.Map.HubCount {
+			// 降级：图上放不满 HubCount 个据点。能放几个放几个（placeHubs
+			// 已在单点 200 次重试上限处停手），留 1 个据点就保持 HasMap=true
+			// 让波次系统照常跑；0 个才走下面的失败路径。
+			slog.Warn("mapgen: 据点数降级（能放几个放几个）",
+				"requested", cfg.Map.HubCount, "placed", placed,
+				"seed", w.Seed, "map", fmt.Sprintf("%dx%d", W, H))
+		}
 		return res, nil
 	}
-	return nil, fmt.Errorf("mapgen: %d 轮重试内无法生成 %d 个间距 ≥%d 的连通据点（图 %dx%d）",
-		maxLayoutRetries, cfg.Map.HubCount, cfg.Map.HubMinDistCells, W, H)
+
+	// 失败：恢复全空地。error 路径留下满图墙的话，调用方 HasMap=false
+	// 短路波次/AI 后，玩家与怪物会站在看不见的墙里。
+	tr.FillAll(world.TileFloor)
+	w.Hubs = nil
+	w.SpawnHub = 0
+	w.HasMap = false
+	return nil, fmt.Errorf("mapgen: %d 轮重试内无法生成任何间距 ≥%d 的据点布局（图 %dx%d）",
+		maxLayoutRetries, cfg.Map.HubMinDistCells, W, H)
 }
 
 type cellPos struct{ cx, cy int }
 
 // placeHubs rejection sampling 撒点：间距 ≥ HubMinDistCells，距边 ≥ hubR+1。
-func placeHubs(w *world.World, cfg *config.Config, W, H int) ([]cellPos, bool) {
+// 某个据点连续 maxPlacementRetry 次找不到合法位置就停手，返回已放下的
+// 前缀（尽力放置，据点数可以少于 HubCount）；一个都放不下才算整体失败。
+func placeHubs(w *world.World, cfg *config.Config, W, H int) ([]cellPos, int) {
 	hubR := cfg.Map.HubRadiusCells
 	margin := hubR + 1
 	var out []cellPos
@@ -120,10 +159,10 @@ func placeHubs(w *world.World, cfg *config.Config, W, H int) ([]cellPos, bool) {
 			}
 		}
 		if !placed {
-			return nil, false
+			break
 		}
 	}
-	return out, true
+	return out, len(out)
 }
 
 // carveCircle 把半径 r 的圆内格设成 tile（ceil 圆判定）。
