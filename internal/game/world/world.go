@@ -50,6 +50,7 @@ type World struct {
 	PathRecalcTicks   uint32
 	MaxBullets        int
 	Mon               *config.Monster // 怪物参数快照（M3，与 AggroRescoreTicks 同款：拷贝不持有 cfg）
+	Wav               *config.Waves   // 波次参数快照（M3，同 Mon 模式）
 
 	// 地图与据点（M3）。HasMap=false 表示旧调用方（老测试）没跑 mapgen，
 	// waves/ai/fog 全部短路成 M2 行为——老测试零改动。
@@ -79,6 +80,7 @@ func NewWorld(cfg *config.Config, seed int64) *World {
 		PathRecalcTicks:   secondsToTicks(cfg.AI.PathRecalcIntervalS, tickRate),
 		MaxBullets:        cfg.Combat.MaxBullets,
 		Mon:               &cfg.Monster,
+		Wav:               &cfg.Waves,
 	}
 	// 地图生成不在这里调——mapgen import world，NewWorld 再调 mapgen 会构成
 	// import cycle（Go 不允许）。改为由编排层 internal/room 在 NewWorld 之后
