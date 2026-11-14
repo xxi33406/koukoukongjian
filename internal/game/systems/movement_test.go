@@ -229,7 +229,8 @@ func TestIntegrateSlidesAlongWall(t *testing.T) {
 	// 直直往右上撞墙：x 分量必须被挡下，y 分量继续（滑墙）。
 	// 注意 dt=0.5 时一步位移 2.1 m，远超圆直径 0.6 m——终点判定会
 	// 直接跳过墙格，这一步逼的是「扫掠」语义。
-	p.MoveIntent = world.V(1, 1).Normalized()
+	dir := world.V(1, 1).Normalized()
+	p.MoveIntent = dir
 	Integrate(p, 0.5, tr)
 
 	if p.Pos.X > 7.7 {
@@ -237,6 +238,13 @@ func TestIntegrateSlidesAlongWall(t *testing.T) {
 	}
 	if p.Pos.Y <= 8.0 {
 		t.Errorf("滑墙后 Pos.Y = %.3f，y 分量应继续前进", p.Pos.Y)
+	}
+	// 撞墙不清 Vel：Vel 是「玩家想往哪走」的意图速度（快照 QuantizeVel
+	// 下发给客户端插值），被挡是位置语义。若清零，客户端会看到速度分量
+	// 间歇归零又恢复（闪烁）。这是 I-1 审查项的回归钉。
+	if !approx(p.Vel.X, PlayerSpeed*dir.X, 1e-9) || !approx(p.Vel.Y, PlayerSpeed*dir.Y, 1e-9) {
+		t.Errorf("撞墙后 Vel = (%.3f, %.3f)，应保持意图速度 (%.3f, %.3f) 不被清零",
+			p.Vel.X, p.Vel.Y, PlayerSpeed*dir.X, PlayerSpeed*dir.Y)
 	}
 	_ = id
 }

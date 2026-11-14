@@ -134,26 +134,32 @@ func Integrate(p *world.PlayerState, dt float64, tr *world.Terrain) {
 	steps := int(math.Max(math.Abs(dx), math.Abs(dy))/slideStep) + 1
 	segX := dx / float64(steps)
 	segY := dy / float64(steps)
+	// blockedX/blockedY 是循环内的局部停止标志——被墙挡住只停推进，
+	// 不清 p.Vel。Vel 的语义是「玩家想往哪走」（快照 QuantizeVel 下发给
+	// 客户端做插值），被挡是位置语义，写回 Vel 会让客户端看到速度分量
+	// 间歇归零又恢复（闪烁）。两轴全挡时靠下面的 break 提前退出。
+	blockedX := false
+	blockedY := false
 	for i := 0; i < steps; i++ {
-		// x 轴：这一段走不过去就清速停步，y 不受影响（滑墙的关键）。
-		if p.Vel.X != 0 {
+		// x 轴：这一段走不过去就停步，y 不受影响（滑墙的关键）。
+		if !blockedX && p.Vel.X != 0 {
 			nx := p.Pos.X + segX
 			if tr.CircleFree(world.V(nx, p.Pos.Y), PlayerRadius) {
 				p.Pos.X = nx
 			} else {
-				p.Vel.X = 0
+				blockedX = true
 			}
 		}
 		// y 轴同理。用更新后的 Pos.X 判定——先 x 后 y，y 段沿已钳好的 x 走。
-		if p.Vel.Y != 0 {
+		if !blockedY && p.Vel.Y != 0 {
 			ny := p.Pos.Y + segY
 			if tr.CircleFree(world.V(p.Pos.X, ny), PlayerRadius) {
 				p.Pos.Y = ny
 			} else {
-				p.Vel.Y = 0
+				blockedY = true
 			}
 		}
-		if p.Vel.X == 0 && p.Vel.Y == 0 {
+		if blockedX && blockedY {
 			break
 		}
 	}
