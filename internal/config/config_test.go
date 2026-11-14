@@ -201,6 +201,67 @@ func TestValidateMaxPlayersCeiling(t *testing.T) {
 	}
 }
 
+func TestDefaultMapFogWavesMonster(t *testing.T) {
+	c := Default()
+	if c.Map.HubCount != 7 {
+		t.Errorf("HubCount = %d, 期望 7", c.Map.HubCount)
+	}
+	if c.Map.HubRadiusCells != 5 {
+		t.Errorf("HubRadiusCells = %d, 期望 5", c.Map.HubRadiusCells)
+	}
+	if c.Map.CorridorWidth != 2 {
+		t.Errorf("CorridorWidth = %d, 期望 2", c.Map.CorridorWidth)
+	}
+	if c.Map.HubMinDistCells != 20 {
+		t.Errorf("HubMinDistCells = %d, 期望 20", c.Map.HubMinDistCells)
+	}
+	if c.Fog.RevealRadius != 8.0 {
+		t.Errorf("RevealRadius = %v, 期望 8.0", c.Fog.RevealRadius)
+	}
+	if c.Waves.WavesPerHub != 3 || c.Waves.MonstersPerWave != 4 {
+		t.Errorf("Waves = %+v, 期望 3 波 × 4 怪", c.Waves)
+	}
+	if c.Waves.InterWaveDelayS != 1.0 {
+		t.Errorf("InterWaveDelayS = %v, 期望 1.0", c.Waves.InterWaveDelayS)
+	}
+	m := c.Monster
+	if m.Speed != 2.5 || m.HP != 50 || m.AttackDamage != 10 {
+		t.Errorf("Monster = %+v, 期望 Speed 2.5 / HP 50 / Damage 10（spec：怪物 50 血 10 攻）", m)
+	}
+	if m.AttackRange != 1.2 || m.AttackCooldownS != 1.0 {
+		t.Errorf("Monster = %+v, 期望 AttackRange 1.2 / Cooldown 1.0", m)
+	}
+	if m.FastChaseDist != 15.0 || m.FastChaseMul != 1.5 {
+		t.Errorf("Monster = %+v, 期望 FastChaseDist 15 / Mul 1.5", m)
+	}
+	if m.SightRange != 20.0 {
+		t.Errorf("SightRange = %v, 期望 20.0", m.SightRange)
+	}
+}
+
+func TestValidateRejectsBadMapMonster(t *testing.T) {
+	cases := []struct {
+		name string
+		mut  func(*Config)
+	}{
+		{"HubCount 超上限", func(c *Config) { c.Map.HubCount = 99 }},
+		{"HubCount 为负", func(c *Config) { c.Map.HubCount = -1 }}, // 0 是合法哨兵：测试用空白世界（Task 3 定稿）
+		{"走廊宽超上限", func(c *Config) { c.Map.CorridorWidth = 9 }},
+		{"据点半径过小", func(c *Config) { c.Map.HubRadiusCells = 1 }},
+		{"迷雾半径过小", func(c *Config) { c.Fog.RevealRadius = 0.5 }},
+		{"怪物速度为负", func(c *Config) { c.Monster.Speed = -1 }},
+		{"追赶倍率小于 1", func(c *Config) { c.Monster.FastChaseMul = 0.9 }},
+		{"每波怪数超上限", func(c *Config) { c.Waves.MonstersPerWave = 33 }},
+	}
+	for _, tc := range cases {
+		c := Default()
+		tc.mut(c)
+		if err := c.Validate(); err == nil {
+			t.Errorf("%s：Validate 应报错，却返回 nil", tc.name)
+		}
+	}
+}
+
 func abs(x float64) float64 {
 	if x < 0 {
 		return -x

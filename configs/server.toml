@@ -36,6 +36,31 @@ terrain_width  = 128   # 地形格数，×1m = 128 米宽
 terrain_height = 128
 max_players    = 4
 
+# M3 世界与波次（灰盒起点值，server-design §5.3/§5.4/§7）
+[map]
+hub_count         = 7   # 据点数，6~8；0 是"关地图"哨兵（测试用空白世界）
+hub_radius_cells  = 5   # 据点空地半径（格，1 格 = 1 m）
+corridor_width    = 2   # 走廊宽（格），窄路制造瓶颈
+hub_min_dist_cells = 20 # 据点中心最小间距（格），防撒点重叠
+
+[fog]
+reveal_radius = 8.0  # 玩家可视半径（米），点亮后永久保留
+
+[waves]
+waves_per_hub      = 3    # 每据点波数（spec 单关 5~8 波，灰盒先 3）
+monsters_per_wave  = 4    # 每波怪数
+inter_wave_delay_s = 1.0  # 清波到下一波的间隔（秒）
+
+[monster]
+speed             = 2.5   # 巡逻/追击基础速度（米/秒）
+hp                = 50    # spec 拍板：怪物 50 血 10 攻
+attack_range      = 1.2   # 进入该距离切换 attack（米）
+attack_damage     = 10
+attack_cooldown_s = 1.0
+fast_chase_dist   = 15.0  # 与目标超过该距离开始加速（米），反风筝
+fast_chase_mul    = 1.5   # 加速倍率，必须 ≥1
+sight_range       = 20.0  # 感知半径（米），且要求视线可通（隔墙不吸怪）
+
 [log]
 level  = "info"  # debug / info / warn / error
 format = "text"  # text / json

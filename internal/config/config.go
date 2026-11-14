@@ -22,6 +22,10 @@ type Config struct {
 	AI      AI      `toml:"ai"`
 	Space   Space   `toml:"space"`
 	World   World   `toml:"world"`
+	Map     Map     `toml:"map"`
+	Fog     Fog     `toml:"fog"`
+	Waves   Waves   `toml:"waves"`
+	Monster Monster `toml:"monster"`
 	Log     Log     `toml:"log"`
 }
 
@@ -69,6 +73,43 @@ type World struct {
 	MaxPlayers    int `toml:"max_players"`
 }
 
+// Map 是地图生成参数（M3）。地形格 1 m，所以"格"就是米。
+// 据点数量 6~8：少于 6 节奏太快、多于 8 单局超时（server-design §5.3）。
+//
+// HubCount == 0 是"空白世界/关地图"的合法哨兵（测试用）：Validate 不拒绝它，
+// 只有负数和超上限才非法。mapgen 对 0 的语义是不生成地图（Task 3 定稿）。
+type Map struct {
+	HubCount        int `toml:"hub_count"`          // 据点数，6~8，灰盒起点 7；0 = 关地图哨兵
+	HubRadiusCells  int `toml:"hub_radius_cells"`   // 据点空地半径（格）
+	CorridorWidth   int `toml:"corridor_width"`     // 走廊宽（格），2 格 = 2 m，窄路制造瓶颈
+	HubMinDistCells int `toml:"hub_min_dist_cells"` // 据点中心最小间距（格），防撒点重叠
+}
+
+// Fog 是战争迷雾参数（M3，server-design §5.4）。
+type Fog struct {
+	RevealRadius float64 `toml:"reveal_radius"` // 玩家可视半径（米）
+}
+
+// Waves 是据点波次参数（M3）。Boss 与两关属于 M7。
+type Waves struct {
+	WavesPerHub     int     `toml:"waves_per_hub"`      // 每据点波数（spec：单关 5~8 波，灰盒先 3）
+	MonstersPerWave int     `toml:"monsters_per_wave"`  // 每波怪数
+	InterWaveDelayS float64 `toml:"inter_wave_delay_s"` // 清波到下一波的间隔（秒）
+}
+
+// Monster 是怪物数值（M3）。spec 拍板：怪物 50 血 10 攻。
+// FastChase* 是"跟远了加速追赶"的反风筝参数（server-design §7）。
+type Monster struct {
+	Speed           float64 `toml:"speed"`             // 巡逻/追击基础速度（米/秒）
+	HP              float64 `toml:"hp"`                // 血量
+	AttackRange     float64 `toml:"attack_range"`      // 进入该距离切换 attack（米）
+	AttackDamage    float64 `toml:"attack_damage"`     // 单次伤害
+	AttackCooldownS float64 `toml:"attack_cooldown_s"` // 攻击间隔（秒）
+	FastChaseDist   float64 `toml:"fast_chase_dist"`   // 与目标超过该距离开始加速（米）
+	FastChaseMul    float64 `toml:"fast_chase_mul"`    // 加速倍率，必须 ≥1
+	SightRange      float64 `toml:"sight_range"`       // 感知半径（米），且要求视线（Bresenham）可通
+}
+
 // Log 是日志参数。
 type Log struct {
 	Level  string `toml:"level"`  // debug / info / warn / error
@@ -108,6 +149,30 @@ func Default() *Config {
 			TerrainWidth:  128,
 			TerrainHeight: 128,
 			MaxPlayers:    4,
+		},
+		Map: Map{
+			HubCount:        7,
+			HubRadiusCells:  5,
+			CorridorWidth:   2,
+			HubMinDistCells: 20,
+		},
+		Fog: Fog{
+			RevealRadius: 8.0,
+		},
+		Waves: Waves{
+			WavesPerHub:     3,
+			MonstersPerWave: 4,
+			InterWaveDelayS: 1.0,
+		},
+		Monster: Monster{
+			Speed:           2.5,
+			HP:              50,
+			AttackRange:     1.2,
+			AttackDamage:    10,
+			AttackCooldownS: 1.0,
+			FastChaseDist:   15.0,
+			FastChaseMul:    1.5,
+			SightRange:      20.0,
 		},
 		Log: Log{
 			Level:  "info",
@@ -206,6 +271,53 @@ func (c *Config) Validate() error {
 	}
 	if c.World.TerrainHeight < 1 || c.World.TerrainHeight > 1024 {
 		add("world.terrain_height = %d，必须在 1..1024", c.World.TerrainHeight)
+	}
+
+	// HubCount == 0 是"空白世界"哨兵（测试关地图用，Task 3 定稿），合法；
+	// 负数与超上限非法。
+	if c.Map.HubCount < 0 || c.Map.HubCount > 16 {
+		add("map.hub_count = %d，必须在 0..16（0 = 关地图哨兵）", c.Map.HubCount)
+	}
+	if c.Map.HubRadiusCells < 2 || c.Map.HubRadiusCells > 30 {
+		add("map.hub_radius_cells = %d，必须在 2..30", c.Map.HubRadiusCells)
+	}
+	if c.Map.CorridorWidth < 1 || c.Map.CorridorWidth > 8 {
+		add("map.corridor_width = %d，必须在 1..8", c.Map.CorridorWidth)
+	}
+	if c.Map.HubMinDistCells < c.Map.HubRadiusCells*2 {
+		add("map.hub_min_dist_cells = %d，小于两据点半径之和 %d，据点必然重叠",
+			c.Map.HubMinDistCells, c.Map.HubRadiusCells*2)
+	}
+
+	if c.Fog.RevealRadius < 1 || c.Fog.RevealRadius > 64 {
+		add("fog.reveal_radius = %v，必须在 1..64", c.Fog.RevealRadius)
+	}
+
+	if c.Waves.WavesPerHub < 1 || c.Waves.WavesPerHub > 16 {
+		add("waves.waves_per_hub = %d，必须在 1..16", c.Waves.WavesPerHub)
+	}
+	if c.Waves.MonstersPerWave < 1 || c.Waves.MonstersPerWave > 32 {
+		add("waves.monsters_per_wave = %d，必须在 1..32", c.Waves.MonstersPerWave)
+	}
+	if c.Waves.InterWaveDelayS < 0 || c.Waves.InterWaveDelayS > 60 {
+		add("waves.inter_wave_delay_s = %v，必须在 0..60", c.Waves.InterWaveDelayS)
+	}
+
+	if c.Monster.Speed < 0 || c.Monster.Speed > 20 {
+		add("monster.speed = %v，必须在 0..20", c.Monster.Speed)
+	}
+	if c.Monster.HP <= 0 {
+		add("monster.hp = %v，必须为正", c.Monster.HP)
+	}
+	if c.Monster.AttackRange <= 0 || c.Monster.AttackDamage < 0 || c.Monster.AttackCooldownS <= 0 {
+		add("monster 攻击参数非法：range=%v damage=%v cooldown=%v",
+			c.Monster.AttackRange, c.Monster.AttackDamage, c.Monster.AttackCooldownS)
+	}
+	if c.Monster.FastChaseMul < 1 {
+		add("monster.fast_chase_mul = %v，必须 ≥1（否则是减速）", c.Monster.FastChaseMul)
+	}
+	if c.Monster.SightRange < 1 || c.Monster.SightRange > 128 {
+		add("monster.sight_range = %v，必须在 1..128", c.Monster.SightRange)
 	}
 
 	switch c.Log.Level {
