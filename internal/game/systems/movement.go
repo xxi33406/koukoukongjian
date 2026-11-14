@@ -117,8 +117,8 @@ func ApplyInput(p *world.PlayerState, move world.Vec2, aim float64, hasAim bool)
 // Pos.X（y 沿着撞墙后的 x 走），交换顺序结果一般不同。回放的确定性来自
 // 「顺序固定」本身，不来自「顺序无关」。
 //
-// tr 为 nil 时跳过碰撞——老测试与"无地形"场景（HubCount=0 的空白世界，
-// Task 3 会统一）直接传 nil 即可保持 M2 行为。
+// tr 不判 nil：NewWorld 恒建 Terrain，nil 是编程错误，panic 比静默直通好。
+// 与 IntegrateBullets 对称（同样直接用 Terrain）。
 func Integrate(p *world.PlayerState, dt float64, tr *world.Terrain) {
 	// 只有活着的玩家能移动。鬼魂另有一套速度，留给 M5。
 	if p.State != world.PlayerAlive {
@@ -127,11 +127,6 @@ func Integrate(p *world.PlayerState, dt float64, tr *world.Terrain) {
 	}
 
 	p.Vel = world.V(p.MoveIntent.X*PlayerSpeed, p.MoveIntent.Y*PlayerSpeed)
-	if tr == nil {
-		p.Pos.X += p.Vel.X * dt
-		p.Pos.Y += p.Vel.Y * dt
-		return
-	}
 
 	// 子步位移切成等长小段逐段判定。最后一段允许更短，保证总位移精确。
 	dx := p.Vel.X * dt

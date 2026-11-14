@@ -7,7 +7,11 @@ import (
 )
 
 func newWorldForTest() *World {
-	return NewWorld(config.Default(), 42)
+	// HubCount=0 是 mapgen 的"关地图"哨兵：保持 M2 全空地行为，
+	// 让伤害/碰撞类测试不被生成的墙干扰。
+	cfg := config.Default()
+	cfg.Map.HubCount = 0
+	return NewWorld(cfg, 42)
 }
 
 func TestResolveDamageSubtractsHP(t *testing.T) {

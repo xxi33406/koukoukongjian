@@ -20,7 +20,11 @@ func quietLogger() *slog.Logger {
 }
 
 func testConfig() *config.Config {
-	return config.Default()
+	// HubCount=0 关地图：room 层既有测试断言 M2 全空地行为
+	// （出生点、靶位、移动），生成的墙会改变这些几何前提。
+	cfg := config.Default()
+	cfg.Map.HubCount = 0
+	return cfg
 }
 
 // ctx 取消后 Run 必须返回，否则进程退不掉。

@@ -125,19 +125,21 @@ func TestApplyInputKeepsAimWhenAbsent(t *testing.T) {
 }
 
 func TestIntegrateMovesAtPlayerSpeed(t *testing.T) {
+	w := newSystemsWorld(t, 1)
 	var p world.PlayerState
 	p.State = world.PlayerAlive
-	p.Pos = world.V(0, 0)
+	// 摆在图内空地，不贴 (0,0)——图外按墙算，出生在角落第一步就撞墙。
+	p.Pos = world.V(10, 10)
 	p.MoveIntent = world.V(1, 0)
-
-	Integrate(&p, 1.0/60, nil)
+	beforeX, beforeY := p.Pos.X, p.Pos.Y
+	Integrate(&p, 1.0/60, w.Terrain)
 
 	want := PlayerSpeed / 60
-	if !approx(p.Pos.X, want, 1e-9) {
-		t.Fatalf("一个子步后 x = %f，期望 %f", p.Pos.X, want)
+	if !approx(p.Pos.X-beforeX, want, 1e-9) {
+		t.Fatalf("一个子步位移 x = %f，期望 %f", p.Pos.X-beforeX, want)
 	}
-	if p.Pos.Y != 0 {
-		t.Fatalf("y 不该变，得到 %f", p.Pos.Y)
+	if p.Pos.Y != beforeY {
+		t.Fatalf("y 不该变，得到位移 %f", p.Pos.Y-beforeY)
 	}
 	if !approx(p.Vel.X, PlayerSpeed, 1e-9) {
 		t.Fatalf("速度 = %f，期望 %f", p.Vel.X, PlayerSpeed)
@@ -147,29 +149,33 @@ func TestIntegrateMovesAtPlayerSpeed(t *testing.T) {
 func TestIntegrateThreeSubStepsEqualsOneTick(t *testing.T) {
 	// 20Hz tick 里跑 3 个子步，总位移必须等于 一整 tick 的位移，
 	// 否则客户端预测和服务器结果会系统性错开。
+	w := newSystemsWorld(t, 1)
 	var p world.PlayerState
 	p.State = world.PlayerAlive
+	p.Pos = world.V(10, 10) // 图内空地，避免贴边撞"图外即墙"。
 	p.MoveIntent = world.V(1, 0)
 
 	for i := 0; i < 3; i++ {
-		Integrate(&p, 1.0/60, nil)
+		Integrate(&p, 1.0/60, w.Terrain)
 	}
 
-	if !approx(p.Pos.X, PlayerSpeed/20, 1e-9) {
-		t.Fatalf("三个子步位移 = %f，期望 %f", p.Pos.X, PlayerSpeed/20)
+	if !approx(p.Pos.X-10, PlayerSpeed/20, 1e-9) {
+		t.Fatalf("三个子步位移 = %f，期望 %f", p.Pos.X-10, PlayerSpeed/20)
 	}
 }
 
 func TestIntegrateZeroIntentStops(t *testing.T) {
+	w := newSystemsWorld(t, 1)
 	var p world.PlayerState
 	p.State = world.PlayerAlive
+	p.Pos = world.V(10, 10) // 图内空地。
 	p.MoveIntent = world.V(1, 0)
-	Integrate(&p, 0.1, nil)
+	Integrate(&p, 0.1, w.Terrain)
 
 	// 松手。
 	p.MoveIntent = world.Vec2{}
 	before := p.Pos.X
-	Integrate(&p, 0.1, nil)
+	Integrate(&p, 0.1, w.Terrain)
 
 	if p.Pos.X != before {
 		t.Fatalf("无输入时位置不该变，%f → %f", before, p.Pos.X)
@@ -180,10 +186,11 @@ func TestIntegrateZeroIntentStops(t *testing.T) {
 }
 
 func TestIntegrateGhostDoesNotMove(t *testing.T) {
+	w := newSystemsWorld(t, 1)
 	var p world.PlayerState
 	p.State = world.PlayerGhost
 	p.MoveIntent = world.V(1, 0)
-	Integrate(&p, 0.1, nil)
+	Integrate(&p, 0.1, w.Terrain)
 
 	if p.Pos.X != 0 {
 		t.Fatalf("鬼魂不该用活人速度移动，得到 x=%f", p.Pos.X)
@@ -192,14 +199,16 @@ func TestIntegrateGhostDoesNotMove(t *testing.T) {
 
 func TestIntegrateDiagonalNotFaster(t *testing.T) {
 	// 斜向推满的意图已归一化，位移模长应与直线相同。
+	w := newSystemsWorld(t, 1)
 	var p world.PlayerState
 	p.State = world.PlayerAlive
+	p.Pos = world.V(10, 10) // 图内空地，斜向两轴都不贴边。
 
 	dir := DecodeMove(1000, 1000)
 	p.MoveIntent = dir
-	Integrate(&p, 1.0/60, nil)
+	Integrate(&p, 1.0/60, w.Terrain)
 
-	got := math.Hypot(p.Pos.X, p.Pos.Y)
+	got := math.Hypot(p.Pos.X-10, p.Pos.Y-10)
 	want := PlayerSpeed / 60
 	if !approx(got, want, 1e-9) {
 		t.Fatalf("斜向位移模长 = %f，期望 %f", got, want)

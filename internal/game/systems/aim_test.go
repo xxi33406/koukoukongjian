@@ -14,9 +14,12 @@ import (
 // world.NewWorld(config.Default(), seed) 的薄包装，迟早会在默认配置
 // 上分叉（某一份改成别的 maxBullets，那个文件的用例就测的不是同一套
 // 规则了）。种子由调用方传，要复现某次随机序列时传固定值。
+// HubCount=0 关地图：保持 M2 全空地行为，弹道/移动测试不被墙干扰。
 func newSystemsWorld(t *testing.T, seed int64) *world.World {
 	t.Helper()
-	return world.NewWorld(config.Default(), seed)
+	cfg := config.Default()
+	cfg.Map.HubCount = 0
+	return world.NewWorld(cfg, seed)
 }
 
 func spawnMonsterAt(t *testing.T, w *world.World, x, y float64) world.EntityID {

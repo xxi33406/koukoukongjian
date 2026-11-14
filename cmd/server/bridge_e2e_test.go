@@ -26,7 +26,10 @@ type e2eHarness struct {
 func startE2E(t *testing.T) *e2eHarness {
 	t.Helper()
 
+	// HubCount=0 关地图：e2e 断言的是"输入 → 玩家位移"这条传输链路，
+	// 生成的墙会把玩家困在出生据点里，位移断言就与链路无关地失败。
 	cfg := config.Default()
+	cfg.Map.HubCount = 0
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 
 	r := room.New(cfg, log, room.Options{ID: "e2e", Seed: 42})

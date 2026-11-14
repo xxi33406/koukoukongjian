@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"koukoukongjian/internal/config"
+	"koukoukongjian/internal/game/mapgen"
 	"koukoukongjian/internal/game/systems"
 	"koukoukongjian/internal/game/world"
 )
@@ -121,6 +122,15 @@ func New(cfg *config.Config, log *slog.Logger, opts Options) *Room {
 		done:         make(chan struct{}),
 	}
 	r.World.Grid.SetBruteThreshold(cfg.Space.SpatialBruteThreshold)
+
+	// 生成灰盒第一关（NewWorld 不能自己调 mapgen：会构成 import cycle）。
+	// 失败直接 panic：配置 Validate 已挡住几何不可能的参数，能走到这里还
+	// 失败说明 Default 与 Validate 出了分歧，启动即暴露。HubCount==0 的
+	// 哨兵世界（测试用）Generate 不动 Terrain，行为与 M2 全空地一致。
+	if _, err := mapgen.Generate(r.World, cfg); err != nil {
+		panic("mapgen: " + err.Error())
+	}
+
 	if opts.DummyTargets > 0 {
 		spawnDummyTargets(r.World, opts.DummyTargets)
 	}

@@ -11,7 +11,10 @@ import (
 // newTestWorld 建一个能装 4 人的空世界。
 func newTestWorld(t *testing.T) *world.World {
 	t.Helper()
-	return world.NewWorld(config.Default(), 42)
+	// HubCount=0 关地图：快照测试只关心实体编码，不关心地形。
+	cfg := config.Default()
+	cfg.Map.HubCount = 0
+	return world.NewWorld(cfg, 42)
 }
 
 // spawnPlayer 放一个玩家，返回稳定 ID 与可写指针。
@@ -550,6 +553,7 @@ func TestBuildSelfNotDoubleCountedAfterForget(t *testing.T) {
 
 func BenchmarkBuildSnapshot(b *testing.B) {
 	cfg := config.Default()
+	cfg.Map.HubCount = 0 // 关地图：基准测的是快照编码，不是地形。
 	w := world.NewWorld(cfg, 1)
 	for i := 0; i < 4; i++ {
 		_, p := w.Players.Spawn()

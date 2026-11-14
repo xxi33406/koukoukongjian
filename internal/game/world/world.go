@@ -49,6 +49,12 @@ type World struct {
 	AggroRescoreTicks uint32
 	PathRecalcTicks   uint32
 	MaxBullets        int
+
+	// 地图与据点（M3）。HasMap=false 表示旧调用方（老测试）没跑 mapgen，
+	// waves/ai/fog 全部短路成 M2 行为——老测试零改动。
+	HasMap   bool
+	Hubs     []Hub
+	SpawnHub int
 }
 
 // NewWorld 依据配置创建一个空世界。
@@ -72,6 +78,10 @@ func NewWorld(cfg *config.Config, seed int64) *World {
 		PathRecalcTicks:   secondsToTicks(cfg.AI.PathRecalcIntervalS, tickRate),
 		MaxBullets:        cfg.Combat.MaxBullets,
 	}
+	// 地图生成不在这里调——mapgen import world，NewWorld 再调 mapgen 会构成
+	// import cycle（Go 不允许）。改为由编排层 internal/room 在 NewWorld 之后
+	// 调 mapgen.Generate：方向 room→mapgen→world，无环。HubCount==0（测试
+	// 哨兵）时 Generate 不动 Terrain，保持 NewTerrain 全空地的 M2 行为。
 	return w
 }
 
