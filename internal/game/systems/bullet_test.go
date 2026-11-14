@@ -81,3 +81,19 @@ func TestIntegrateBulletsReapsManyAtOnce(t *testing.T) {
 		t.Fatalf("10 颗全部到期，池里还剩 %d 颗", w.Bullets.Len())
 	}
 }
+
+func TestIntegrateBulletsDiesOnWall(t *testing.T) {
+	w := newSystemsWorld(t, 3)
+	for cy := 0; cy < w.Terrain.Height(); cy++ {
+		w.Terrain.Set(6, cy, world.TileWall)
+	}
+	id := spawnBulletAt(t, w, 4.0, 8.0, 20, 0) // 直冲 x=6 的墙
+	b := w.Bullets.Get(id)
+	b.Life = 1.0
+
+	IntegrateBullets(w, 0.2) // 20 m/s × 0.2 s = 4 m → x≈8，已穿墙
+
+	if w.Bullets.Alive(id) {
+		t.Error("子弹撞墙后应被回收")
+	}
+}

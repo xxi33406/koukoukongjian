@@ -22,6 +22,20 @@ import (
 // M2 只做机制验证不做手感调参，等进入调参阶段（M5）再把两者一起挪进 config。
 const PlayerSpeed = 6.0
 
+// PlayerRadius 是玩家的碰撞半径（米）。
+//
+// 灰盒阶段写死：小于半格（地形格 1 m），保证圆覆盖的格数有限、判定便宜。
+// 手感调参（M5）与 PlayerSpeed 一起挪 config。
+const PlayerRadius = 0.3
+
+// slideStep 是滑墙判定的最大采样步长（米）。
+//
+// 一个子步的位移可能远大于直径（tick 放大、击退叠加后一步 2 m 很现实），
+// 只判终点会直接跳过墙格。把位移切成不超过 slideStep 的小段逐段判定，
+// 撞到即停在该段——等价于用固定步长采样连续运动，钳位误差 ≤ slideStep。
+// slideStep 必须小于格边长，否则单个采样段自身就能跨格穿墙。
+const slideStep = 0.15
+
 // MaxInputMagnitude 是摇杆输入的长度上限，对应 proto 里 ×1000 的量化。
 //
 // 客户端把方向向量乘以 1000 后取整发送，所以这里的 1000 就是"推满"。
@@ -87,12 +101,24 @@ func ApplyInput(p *world.PlayerState, move world.Vec2, aim float64, hasAim bool)
 	}
 }
 
-// Integrate 按当前意图推进一个子步的位置。
+// Integrate 按当前意图推进一个子步的位置，带地形碰撞（分轴滑墙）。
 //
-// dt 是子步时长（秒）。这里刻意不做碰撞检测：碰撞属于 Collide 系统，
-// 顺序上排在移动之后。移动只负责"想去的方向走一步"，碰撞负责"这一步
-// 是否能站住"。
-func Integrate(p *world.PlayerState, dt float64) {
+// X/Y 分轴处理：撞墙的那根轴把速度清零并停在墙边，另一根轴继续走——
+// 这就是"贴墙滑动"而不是"完全卡死"。斜着撞墙若整体判定（先合成位移再
+// 一次判定），撞不上就全走、撞上就全停，贴墙斜走时会一步走一步停，手感
+// 像在磕头。分轴后任何斜向输入在墙边都会退化成沿墙的匀速滑动。
+//
+// 一个子步的位移可能远大于碰撞圆直径（dt 放大、击退叠加），只判终点会
+// 直接跳过墙格。所以位移被切成不超过 slideStep 的小段逐段判定：段内
+// CircleFree 才前进，否则该轴速度清零、停在本段起点（不二分求墙边精确
+// 距离——误差 ≤ slideStep，灰盒接受）。
+//
+// 顺序固定先 x 后 y。两个轴都被挡时结果与处理顺序无关（各自独立钳位），
+// 固定顺序只是为了可复现。
+//
+// tr 为 nil 时跳过碰撞——老测试与"无地形"场景（HubCount=0 的空白世界，
+// Task 3 会统一）直接传 nil 即可保持 M2 行为。
+func Integrate(p *world.PlayerState, dt float64, tr *world.Terrain) {
 	// 只有活着的玩家能移动。鬼魂另有一套速度，留给 M5。
 	if p.State != world.PlayerAlive {
 		p.Vel = world.Vec2{}
@@ -100,8 +126,41 @@ func Integrate(p *world.PlayerState, dt float64) {
 	}
 
 	p.Vel = world.V(p.MoveIntent.X*PlayerSpeed, p.MoveIntent.Y*PlayerSpeed)
-	p.Pos.X += p.Vel.X * dt
-	p.Pos.Y += p.Vel.Y * dt
+	if tr == nil {
+		p.Pos.X += p.Vel.X * dt
+		p.Pos.Y += p.Vel.Y * dt
+		return
+	}
+
+	// 子步位移切成等长小段逐段判定。最后一段允许更短，保证总位移精确。
+	dx := p.Vel.X * dt
+	dy := p.Vel.Y * dt
+	steps := int(math.Max(math.Abs(dx), math.Abs(dy))/slideStep) + 1
+	segX := dx / float64(steps)
+	segY := dy / float64(steps)
+	for i := 0; i < steps; i++ {
+		// x 轴：这一段走不过去就清速停步，y 不受影响（滑墙的关键）。
+		if p.Vel.X != 0 {
+			nx := p.Pos.X + segX
+			if tr.CircleFree(world.V(nx, p.Pos.Y), PlayerRadius) {
+				p.Pos.X = nx
+			} else {
+				p.Vel.X = 0
+			}
+		}
+		// y 轴同理。用更新后的 Pos.X 判定——先 x 后 y，y 段沿已钳好的 x 走。
+		if p.Vel.Y != 0 {
+			ny := p.Pos.Y + segY
+			if tr.CircleFree(world.V(p.Pos.X, ny), PlayerRadius) {
+				p.Pos.Y = ny
+			} else {
+				p.Vel.Y = 0
+			}
+		}
+		if p.Vel.X == 0 && p.Vel.Y == 0 {
+			break
+		}
+	}
 }
 
 func isFinite(f float64) bool {

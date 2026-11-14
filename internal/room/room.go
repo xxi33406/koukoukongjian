@@ -313,7 +313,7 @@ func (r *Room) subStep(sub int) {
 
 	// 2.3 移动积分
 	w.Players.Each(func(_ world.EntityID, p *world.PlayerState) bool {
-		systems.Integrate(p, dt)
+		systems.Integrate(p, dt, w.Terrain)
 		return true
 	})
 	systems.IntegrateBullets(w, dt)

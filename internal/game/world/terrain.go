@@ -1,5 +1,7 @@
 package world
 
+import "math"
+
 // Tile 是地形位图的一格。
 type Tile uint8
 
@@ -145,4 +147,96 @@ func (t *Terrain) Hash() uint64 {
 		h *= prime
 	}
 	return h
+}
+
+// FillAll 把整张图设成同一种瓦片。地图生成（M3 mapgen）的起点是"全墙"，
+// 然后逐块挖出据点与走廊。
+func (t *Terrain) FillAll(tile Tile) {
+	for i := range t.tiles {
+		t.tiles[i] = tile
+	}
+}
+
+// CircleFree 判断以 pos 为圆心、r 为半径的圆是否完全不与墙重叠。
+// 检查圆覆盖到的每个格子（圆心格 + 四至），墙格重叠即 false。
+// 图外按墙处理——At 越界返回 TileWall，天然挡住"走出世界"。
+func (t *Terrain) CircleFree(pos Vec2, r float64) bool {
+	inv := 1.0 / t.cellSize
+	cx0 := int(math.Floor((pos.X - r) * inv))
+	cx1 := int(math.Floor((pos.X + r) * inv))
+	cy0 := int(math.Floor((pos.Y - r) * inv))
+	cy1 := int(math.Floor((pos.Y + r) * inv))
+	for cy := cy0; cy <= cy1; cy++ {
+		for cx := cx0; cx <= cx1; cx++ {
+			if !t.At(cx, cy).Walkable() {
+				// 粗判：格子矩形与圆重叠才算撞。r 小于半格时角上的
+				// "格子矩形沾到但圆没沾到"会被误拒——灰盒接受，墙边
+				// 会显得比实际厚不到半格，玩家感知不到。
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// LineWalkable 判断世界坐标 a→b 的直线是否全程走在可走格上（含两端）。
+// 用于 AI 视线（隔墙不吸怪）与寻路结果的拐点压缩（string pulling），
+// 也被子弹撞墙回收复用（PrevPos→Pos 的子步线段）。
+// 格级 Bresenham：把两端转到格坐标后走整条格线。
+func (t *Terrain) LineWalkable(a, b Vec2) bool {
+	ax, ay := t.cellOf(a)
+	bx, by := t.cellOf(b)
+	dx := bx - ax
+	dy := by - ay
+	sx, sy := 1, 1
+	if dx < 0 {
+		sx = -1
+	}
+	if dy < 0 {
+		sy = -1
+	}
+	if dx < 0 {
+		dx = -dx
+	}
+	if dy < 0 {
+		dy = -dy
+	}
+	err := dx - dy
+	x, y := ax, ay
+	for {
+		if !t.At(x, y).Walkable() {
+			return false
+		}
+		if x == bx && y == by {
+			return true
+		}
+		e2 := 2 * err
+		if e2 > -dy {
+			err -= dy
+			x += sx
+		}
+		if e2 < dx {
+			err += dx
+			y += sy
+		}
+	}
+}
+
+// cellOf 把世界坐标转成格坐标并钳到图内（负数与越界都拉回边界）。
+func (t *Terrain) cellOf(p Vec2) (int, int) {
+	cx := int(math.Floor(p.X / t.cellSize))
+	cy := int(math.Floor(p.Y / t.cellSize))
+	if cx < 0 {
+		cx = 0
+	}
+	if cy < 0 {
+		cy = 0
+	}
+	if cx >= t.width {
+		cx = t.width - 1
+	}
+	if cy >= t.height {
+		cy = t.height - 1
+	}
+	return cx, cy
 }

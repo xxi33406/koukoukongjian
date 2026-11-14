@@ -117,3 +117,56 @@ func TestTerrainHashStable(t *testing.T) {
 		t.Fatal("地形改动后哈希应当变化")
 	}
 }
+
+func TestFillAllSetsEveryTile(t *testing.T) {
+	tr := NewTerrain(4, 3, 1.0)
+	tr.FillAll(TileWall)
+	if tr.WalkableCount() != 0 {
+		t.Errorf("FillAll(墙) 后可走格 = %d, 期望 0", tr.WalkableCount())
+	}
+	if tr.At(0, 0) != TileWall || tr.At(3, 2) != TileWall {
+		t.Errorf("FillAll(墙) 后角落仍是 %v/%v, 期望全墙", tr.At(0, 0), tr.At(3, 2))
+	}
+	tr.FillAll(TileFloor)
+	if tr.WalkableCount() != 12 {
+		t.Errorf("FillAll(地) 后可走格 = %d, 期望 12", tr.WalkableCount())
+	}
+}
+
+func TestCircleFreeRejectsWallOverlap(t *testing.T) {
+	tr := NewTerrain(8, 8, 1.0)
+	tr.Set(5, 5, TileWall)
+	// 圆心在墙格中心，半径再小也撞。
+	if tr.CircleFree(V(5.5, 5.5), 0.3) {
+		t.Error("圆心落在墙格上，CircleFree 应为 false")
+	}
+	// 圆贴着墙格边缘：圆心(4.9,5.5) 半径 0.3 → x 覆盖到 5.2，侵入墙格 [5,6)。
+	if tr.CircleFree(V(4.9, 5.5), 0.3) {
+		t.Error("圆侵入墙格边缘，CircleFree 应为 false")
+	}
+	// 完全在空地内部。
+	if !tr.CircleFree(V(2.0, 2.0), 0.3) {
+		t.Error("空地内部的圆，CircleFree 应为 true")
+	}
+	// 图外按墙处理（At 越界返回 TileWall）。
+	if tr.CircleFree(V(-0.5, 2.0), 0.1) {
+		t.Error("圆越出世界边界，CircleFree 应为 false")
+	}
+}
+
+func TestLineWalkableCrossesWall(t *testing.T) {
+	tr := NewTerrain(8, 8, 1.0)
+	tr.Set(4, 4, TileWall)
+	// (1,1) → (6,6) 的格线穿过 (4,4)。
+	if tr.LineWalkable(V(1.5, 1.5), V(6.5, 6.5)) {
+		t.Error("视线穿墙，LineWalkable 应为 false")
+	}
+	// 绕开墙的线。
+	if !tr.LineWalkable(V(1.5, 1.5), V(6.5, 1.5)) {
+		t.Error("同行空地视线应为 true")
+	}
+	// 端点本身在墙里。
+	if tr.LineWalkable(V(4.5, 4.5), V(6.5, 6.5)) {
+		t.Error("起点在墙内，LineWalkable 应为 false")
+	}
+}

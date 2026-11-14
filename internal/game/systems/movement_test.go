@@ -130,7 +130,7 @@ func TestIntegrateMovesAtPlayerSpeed(t *testing.T) {
 	p.Pos = world.V(0, 0)
 	p.MoveIntent = world.V(1, 0)
 
-	Integrate(&p, 1.0/60)
+	Integrate(&p, 1.0/60, nil)
 
 	want := PlayerSpeed / 60
 	if !approx(p.Pos.X, want, 1e-9) {
@@ -152,7 +152,7 @@ func TestIntegrateThreeSubStepsEqualsOneTick(t *testing.T) {
 	p.MoveIntent = world.V(1, 0)
 
 	for i := 0; i < 3; i++ {
-		Integrate(&p, 1.0/60)
+		Integrate(&p, 1.0/60, nil)
 	}
 
 	if !approx(p.Pos.X, PlayerSpeed/20, 1e-9) {
@@ -164,12 +164,12 @@ func TestIntegrateZeroIntentStops(t *testing.T) {
 	var p world.PlayerState
 	p.State = world.PlayerAlive
 	p.MoveIntent = world.V(1, 0)
-	Integrate(&p, 0.1)
+	Integrate(&p, 0.1, nil)
 
 	// 松手。
 	p.MoveIntent = world.Vec2{}
 	before := p.Pos.X
-	Integrate(&p, 0.1)
+	Integrate(&p, 0.1, nil)
 
 	if p.Pos.X != before {
 		t.Fatalf("无输入时位置不该变，%f → %f", before, p.Pos.X)
@@ -183,7 +183,7 @@ func TestIntegrateGhostDoesNotMove(t *testing.T) {
 	var p world.PlayerState
 	p.State = world.PlayerGhost
 	p.MoveIntent = world.V(1, 0)
-	Integrate(&p, 0.1)
+	Integrate(&p, 0.1, nil)
 
 	if p.Pos.X != 0 {
 		t.Fatalf("鬼魂不该用活人速度移动，得到 x=%f", p.Pos.X)
@@ -197,11 +197,52 @@ func TestIntegrateDiagonalNotFaster(t *testing.T) {
 
 	dir := DecodeMove(1000, 1000)
 	p.MoveIntent = dir
-	Integrate(&p, 1.0/60)
+	Integrate(&p, 1.0/60, nil)
 
 	got := math.Hypot(p.Pos.X, p.Pos.Y)
 	want := PlayerSpeed / 60
 	if !approx(got, want, 1e-9) {
 		t.Fatalf("斜向位移模长 = %f，期望 %f", got, want)
+	}
+}
+
+func TestIntegrateSlidesAlongWall(t *testing.T) {
+	w := newSystemsWorld(t, 1)
+	tr := w.Terrain
+	// 世界中部立一堵竖墙（x=8 列），玩家在墙左侧贴墙向上走。
+	for cy := 4; cy <= 12; cy++ {
+		tr.Set(8, cy, world.TileWall)
+	}
+	id, p := w.Players.Spawn()
+	p.Pos = world.V(7.5, 8.0) // 紧贴墙（半径 0.3 → 7.8 距墙列 [8,9) 还差 0.2）
+	p.State = world.PlayerAlive
+
+	// 直直往右上撞墙：x 分量必须被挡下，y 分量继续（滑墙）。
+	// 注意 dt=0.5 时一步位移 2.1 m，远超圆直径 0.6 m——终点判定会
+	// 直接跳过墙格，这一步逼的是「扫掠」语义。
+	p.MoveIntent = world.V(1, 1).Normalized()
+	Integrate(p, 0.5, tr)
+
+	if p.Pos.X > 7.7 {
+		t.Errorf("撞墙后 Pos.X = %.3f，不该越过墙边（≤7.7 附近）", p.Pos.X)
+	}
+	if p.Pos.Y <= 8.0 {
+		t.Errorf("滑墙后 Pos.Y = %.3f，y 分量应继续前进", p.Pos.Y)
+	}
+	_ = id
+}
+
+func TestIntegrateFreeAreaUnchanged(t *testing.T) {
+	w := newSystemsWorld(t, 1) // 全空地
+	_, p := w.Players.Spawn()
+	p.Pos = world.V(10, 10)
+	p.State = world.PlayerAlive
+	p.MoveIntent = world.V(1, 0)
+	Integrate(p, 0.5, w.Terrain)
+	// 位移量与 M2 一致即可。实现按 slideStep 分段累加（滑墙扫掠语义），
+	// 浮点逐段舍入后不再 bit 级等于一次加法的结果，用 1e-9 容差。
+	want := 10.0 + PlayerSpeed*0.5
+	if !approx(p.Pos.X, want, 1e-9) {
+		t.Errorf("空地上 Pos.X = %.3f, 期望 %.3f（行为必须与 M2 完全一致）", p.Pos.X, want)
 	}
 }
