@@ -190,4 +190,12 @@ func TestLineWalkableBlocksDiagonalCorner(t *testing.T) {
 	if !tr2.LineWalkable(V(4.5, 4.5), V(5.5, 5.5)) {
 		t.Error("单侧墙角的对角线应从另一侧正交格通过，LineWalkable 应为 true")
 	}
+	// 对称用例：墙在左侧 (4,5)，右侧 (5,4) 空——如果 supercover 只查
+	// 单侧正交格（比如只查右侧），本用例仍绿而上面的用例红，两者合起来
+	// 才钉住「两侧都查、都墙才挡」。
+	tr3 := NewTerrain(8, 8, 1.0)
+	tr3.Set(4, 5, TileWall)
+	if !tr3.LineWalkable(V(4.5, 4.5), V(5.5, 5.5)) {
+		t.Error("单侧墙角（另一侧）的对角线也应通过，LineWalkable 应为 true")
+	}
 }

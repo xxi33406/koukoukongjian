@@ -143,7 +143,9 @@ func New(cfg *config.Config, log *slog.Logger, opts Options) *Room {
 	// 让对局起不来。
 	waves := opts.WavesEnabled && opts.DummyTargets == 0
 	if opts.DummyTargets > 0 && opts.WavesEnabled {
-		log.Warn("room: -dummy-targets 与波次互斥，本次禁用波次")
+		// r.log 自带 room 标识（:120 With("room")），与 :138 的 mapgen
+		// 告警同模式——多房间日志可归组。
+		r.log.Warn("-dummy-targets 与波次互斥，本次禁用波次")
 	}
 	r.wavesEnabled = waves
 

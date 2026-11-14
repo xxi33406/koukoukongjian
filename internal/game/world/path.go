@@ -16,6 +16,7 @@ import "container/heap"
 
 // FindPath 返回 a→b 的拐点路径（世界坐标，含起点与终点），不可达返回 nil。
 // 起点或终点在墙内也返回 nil（调用方先保证位置合法，这里不兜底）。
+// a==b（同格或同点）返回 [a]：单点路径，调用方无需特判。
 func FindPath(tr *Terrain, a, b Vec2) []Vec2 {
 	startX, startY := tr.cellOf(a)
 	goalX, goalY := tr.cellOf(b)

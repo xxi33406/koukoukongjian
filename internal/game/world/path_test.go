@@ -59,6 +59,17 @@ func TestFindPathStartInWall(t *testing.T) {
 	}
 }
 
+func TestFindPathStartEqualsGoal(t *testing.T) {
+	tr := NewTerrain(16, 16, 1.0)
+	a := V(4.5, 4.5)
+	path := FindPath(tr, a, a)
+	// 起点即终点：A* 首次展开即命中目标，回溯只有起点一格，
+	// 压缩后返回 [a]——调用方拿到的路径含起点（path.go 契约），长度 1。
+	if len(path) != 1 || path[0] != a {
+		t.Errorf("起点==终点应返回 [a]，实际 %v", path)
+	}
+}
+
 func TestCompressPathKeepsEndpointsAndSight(t *testing.T) {
 	tr := NewTerrain(16, 16, 1.0)
 	grid := []Vec2{V(1.5, 1.5), V(1.5, 8.5), V(5.5, 8.5), V(5.5, 12.5)}

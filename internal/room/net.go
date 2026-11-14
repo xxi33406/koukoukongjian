@@ -123,9 +123,9 @@ func (r *Room) handleJoin(req JoinRequest) {
 		return
 	}
 
-	// 出生点：按座位号摊在地图中心的 2×2 小方阵里，间距 3 米——比玩家
-	// 直径（约 0.6 米）大得多，不会互相卡住也不会立刻重叠。M3 接入真实
-	// 地图后改成按据点出生。
+	// 出生点：HasMap 时按座位号挂在出生据点中心的 1m 环上（四向 90°
+	// 错位，相邻间距约 1.4m > 玩家直径，不会互相卡住）；无图回落旧
+	// 2×2 方阵（测试/哨兵世界用）。见 spawnPoint 的实现注释。
 	p.Pos = r.spawnPoint(slot)
 	p.State = world.PlayerAlive
 	p.MaxHP = 100
