@@ -222,6 +222,11 @@ func (t *Terrain) LineWalkable(a, b Vec2) bool {
 	}
 }
 
+// cellCenter 返回格 (cx,cy) 的世界坐标中心。
+func (t *Terrain) cellCenter(cx, cy int) Vec2 {
+	return V((float64(cx)+0.5)*t.cellSize, (float64(cy)+0.5)*t.cellSize)
+}
+
 // cellOf 把世界坐标转成格坐标并钳到图内（负数与越界都拉回边界）。
 func (t *Terrain) cellOf(p Vec2) (int, int) {
 	cx := int(math.Floor(p.X / t.cellSize))
