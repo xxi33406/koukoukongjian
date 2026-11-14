@@ -211,12 +211,29 @@ func (t *Terrain) LineWalkable(a, b Vec2) bool {
 			return true
 		}
 		e2 := 2 * err
+		// 对角单步补查正交邻格（supercover）：标准 Bresenham 斜走时只落
+		// 对角格，两个正交邻格若都是墙，就存在一条「只在角上相接」的墙缝，
+		// 任何有宽度的实体（子弹半径 0.12+）都会同时嵌进两侧墙格——必须挡。
+		// 只挡两侧都墙的缝：单侧贴角时实体可贴另一侧空地绕过，中心线在
+		// 角点只是零测度接触，不挡（挡了会误杀贴墙角的真实可走路径）。
+		var stepX, stepY bool
 		if e2 > -dy {
 			err -= dy
-			x += sx
+			stepX = true
 		}
 		if e2 < dx {
 			err += dx
+			stepY = true
+		}
+		if stepX && stepY {
+			if !t.At(x+sx, y).Walkable() && !t.At(x, y+sy).Walkable() {
+				return false
+			}
+		}
+		if stepX {
+			x += sx
+		}
+		if stepY {
 			y += sy
 		}
 	}

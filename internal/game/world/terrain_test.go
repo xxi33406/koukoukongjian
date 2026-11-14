@@ -170,3 +170,24 @@ func TestLineWalkableCrossesWall(t *testing.T) {
 		t.Error("起点在墙内，LineWalkable 应为 false")
 	}
 }
+
+func TestLineWalkableBlocksDiagonalCorner(t *testing.T) {
+	tr := NewTerrain(8, 8, 1.0)
+	// 两墙对角相接（只在角上碰）：(4,5) 与 (5,4) 是墙，(4,4)/(5,5) 是空地。
+	// 标准格级 Bresenham 对角线只走 (4,4)→(5,5) 两个格，不查正交邻格，
+	// 会把这条「夹缝」判成可走——子弹与 AI 视线都会从墙角斜穿。
+	// supercover 修法：斜走一步时补查两个正交邻格，两个都空才允许对角通过。
+	tr.Set(4, 5, TileWall)
+	tr.Set(5, 4, TileWall)
+	if tr.LineWalkable(V(4.5, 4.5), V(5.5, 5.5)) {
+		t.Error("对角墙缝不应视为视线可走，LineWalkable 应为 false")
+	}
+	// 只有一侧是墙时，另一侧正交格仍通——对角线贴着单墙角穿过是合法路径
+	// （supercover 语义：只挡「两侧都墙」的角缝，不误杀单侧贴角）。
+	// 摆位：墙在 (5,4)（行进方向的右侧正交格），左侧 (4,5) 空。
+	tr2 := NewTerrain(8, 8, 1.0)
+	tr2.Set(5, 4, TileWall)
+	if !tr2.LineWalkable(V(4.5, 4.5), V(5.5, 5.5)) {
+		t.Error("单侧墙角的对角线应从另一侧正交格通过，LineWalkable 应为 true")
+	}
+}
