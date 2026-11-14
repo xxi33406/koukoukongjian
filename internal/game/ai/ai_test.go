@@ -39,6 +39,27 @@ func spawnPl(t *testing.T, w *world.World, x, y float64) world.EntityID {
 	return id
 }
 
+func TestRescoreAggroFullRosterNoPanic(t *testing.T) {
+	// M3-Task6 审查 C1 回归钉：pool.Spawn 在 free 栈耗尽后会 append 新槽，
+	// 第 4 个加入的玩家 Index() 是 4 而非 ≤3——满员时 RescoreAggro 必须不 panic。
+	w := newAIWorld(t)
+	mid := spawnMon(t, w, 5, 10)
+	spawnPl(t, w, 10, 10)
+	spawnPl(t, w, 12, 10)
+	spawnPl(t, w, 14, 10)
+	spawnPl(t, w, 16, 10) // idx=4（第 4 个槽，free 栈耗尽后 append）
+
+	m := w.Monsters.Get(mid)
+	if m == nil {
+		t.Fatal("怪物不存在")
+	}
+	// 旧实现 [4]float64 在这一行 panic：index out of range [4] with length 4。
+	RescoreAggro(w, m)
+	if m.TargetID == world.InvalidID {
+		t.Fatal("满员场景必须锁到一个目标")
+	}
+}
+
 func TestRescoreAggroPicksNearestWithLOS(t *testing.T) {
 	w := newAIWorld(t)
 	pid := spawnPl(t, w, 10, 10)

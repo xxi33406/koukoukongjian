@@ -135,7 +135,12 @@ type MonsterState struct {
 	PoisonRem float64 // 位置死亡技能的"强化"累计值（spec L131）
 
 	// M3：仇恨打分的三路输入（回放一致性：只在 tick 循环内读写）。
-	AggroDmg [4]float64 // 近期伤害（指数遗忘：rescore 时 ×0.5）
+	// 数组长度是 5 不是 MaxPlayers(4)：pool.Spawn 在 free 栈耗尽后只要
+	// live<max 就 append 新槽（pool.go），NewPool(max,max) 的槽位下标
+	// 上界是 capacity+1——第 4 个加入的玩家 Index() 可以是 4。
+	// （M3-Task6 审查 C1：满员 4 人 RescoreAggro 越界 panic 的根因，
+	// 旧注释「0 号槽保留、实际索引 ≤3」的论证是错的。）
+	AggroDmg [5]float64 // 近期伤害（指数遗忘：rescore 时 ×0.5）
 	AttackAt uint32     // 上次攻击的 tick（冷却判定）
 
 	// —— 计时器（单位：tick）——
