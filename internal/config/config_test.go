@@ -1,6 +1,7 @@
 package config
 
 import (
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -246,12 +247,18 @@ func TestValidateRejectsBadMapMonster(t *testing.T) {
 	}{
 		{"HubCount 超上限", func(c *Config) { c.Map.HubCount = 99 }},
 		{"HubCount 为负", func(c *Config) { c.Map.HubCount = -1 }}, // 0 是合法哨兵：测试用空白世界（Task 3 定稿）
+		{"据点最小距离不足（重叠）", func(c *Config) { c.Map.HubMinDistCells = 5; c.Map.HubRadiusCells = 5 }},
 		{"走廊宽超上限", func(c *Config) { c.Map.CorridorWidth = 9 }},
 		{"据点半径过小", func(c *Config) { c.Map.HubRadiusCells = 1 }},
 		{"迷雾半径过小", func(c *Config) { c.Fog.RevealRadius = 0.5 }},
+		{"迷雾半径为 NaN", func(c *Config) { c.Fog.RevealRadius = math.NaN() }}, // NaN 穿过一切区间比较，必须单独拦
+		{"怪物速度为 NaN", func(c *Config) { c.Monster.Speed = math.NaN() }},
+		{"怪物血量为 Inf", func(c *Config) { c.Monster.HP = math.Inf(1) }},
 		{"怪物速度为负", func(c *Config) { c.Monster.Speed = -1 }},
 		{"追赶倍率小于 1", func(c *Config) { c.Monster.FastChaseMul = 0.9 }},
 		{"每波怪数超上限", func(c *Config) { c.Waves.MonstersPerWave = 33 }},
+		{"波间隔为负", func(c *Config) { c.Waves.InterWaveDelayS = -0.1 }},
+		{"视野距离过小", func(c *Config) { c.Monster.SightRange = 0.5 }},
 	}
 	for _, tc := range cases {
 		c := Default()
@@ -259,6 +266,17 @@ func TestValidateRejectsBadMapMonster(t *testing.T) {
 		if err := c.Validate(); err == nil {
 			t.Errorf("%s：Validate 应报错，却返回 nil", tc.name)
 		}
+	}
+}
+
+func TestValidateAcceptsHubCountZeroSentinel(t *testing.T) {
+	// HubCount==0 是"空白世界"哨兵（Task 3 所有测试 helper 靠它关地图）。
+	// 没有这条正向断言，将来有人把校验"修"回 <1 时不会有任何测试变红，
+	// 哨兵静默失效、Task 3 的地基塌掉。负例（-1/99）在 TestValidateRejectsBadMapMonster 里。
+	c := Default()
+	c.Map.HubCount = 0
+	if err := c.Validate(); err != nil {
+		t.Errorf("HubCount=0（关地图哨兵）应通过 Validate，却报错：%v", err)
 	}
 }
 

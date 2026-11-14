@@ -8,6 +8,7 @@ package config
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"time"
 
@@ -288,6 +289,25 @@ func (c *Config) Validate() error {
 		add("map.hub_min_dist_cells = %d，小于两据点半径之和 %d，据点必然重叠",
 			c.Map.HubMinDistCells, c.Map.HubRadiusCells*2)
 	}
+
+	// 浮点非法值防御：NaN/Inf 会穿过一切区间比较（NaN 对 <、> 全为假），
+	// 必须先于所有区间校验拦掉。这是本批新增浮点字段新暴露给 TOML 的面。
+	// 根因（AGENTS §1.2 近亲）：边界校验只防了有限值，没防"非数/无穷"这类
+	// 无法用区间表达的垃圾。NaN 坐标流入 mapgen/怪物系统会让网格与碰撞全面失控。
+	addNaN := func(name string, v float64) {
+		if math.IsNaN(v) || math.IsInf(v, 0) {
+			add("%s = %v，必须为有限数", name, v)
+		}
+	}
+	addNaN("fog.reveal_radius", c.Fog.RevealRadius)
+	addNaN("waves.inter_wave_delay_s", c.Waves.InterWaveDelayS)
+	addNaN("monster.speed", c.Monster.Speed)
+	addNaN("monster.hp", c.Monster.HP)
+	addNaN("monster.attack_range", c.Monster.AttackRange)
+	addNaN("monster.attack_damage", c.Monster.AttackDamage)
+	addNaN("monster.attack_cooldown_s", c.Monster.AttackCooldownS)
+	addNaN("monster.fast_chase_mul", c.Monster.FastChaseMul)
+	addNaN("monster.sight_range", c.Monster.SightRange)
 
 	if c.Fog.RevealRadius < 1 || c.Fog.RevealRadius > 64 {
 		add("fog.reveal_radius = %v，必须在 1..64", c.Fog.RevealRadius)
