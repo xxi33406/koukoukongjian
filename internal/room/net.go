@@ -165,7 +165,14 @@ func (r *Room) handleJoin(req JoinRequest) {
 // 抽成方法而不是内联：测试要往"玩家正右方 3 m"摆靶子，就得先知道出生点。
 // 让测试自己再算一遍同一套公式，等于世界尺寸一改就有一半用例以"怪物血量
 // 没下降"的形式静默失败——那是最难查的一类失败。
+//
+// HasMap 时出生在出生据点中心（审查 Important-4 临时接线：地图生成后
+// 图中心方阵大概率嵌墙，8 种子实测 100% 嵌墙）。正式的据点环错位出生在
+// Task 4 落到 net.go 的 handleJoin 接线时再展开。
 func (r *Room) spawnPoint(slot int) world.Vec2 {
+	if r.World.HasMap {
+		return r.World.Hubs[r.World.SpawnHub].Center
+	}
 	w := r.World.Terrain.WorldWidth()
 	h := r.World.Terrain.WorldHeight()
 	return world.V(

@@ -148,8 +148,13 @@ func New(cfg *config.Config, log *slog.Logger, opts Options) *Room {
 // 且落在步枪射程内（20 m/s × 1.2 s = 24 m）。
 func spawnDummyTargets(w *world.World, n int) {
 	const ringRadius = 6.0
-	cx := w.Terrain.WorldWidth() / 2
-	cy := w.Terrain.WorldHeight() / 2
+	// HasMap 时靶环挂在出生据点上：图中心大概率是墙，靶子会嵌墙
+	// （审查 Important-4 同源问题）。
+	cx, cy := w.Terrain.WorldWidth()/2, w.Terrain.WorldHeight()/2
+	if w.HasMap {
+		c := w.Hubs[w.SpawnHub].Center
+		cx, cy = c.X, c.Y
+	}
 
 	for i := 0; i < n; i++ {
 		ang := 2 * math.Pi * float64(i) / float64(n)

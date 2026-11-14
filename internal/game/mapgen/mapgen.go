@@ -59,6 +59,14 @@ func Generate(w *world.World, cfg *config.Config) (*Result, error) {
 	hubR := cfg.Map.HubRadiusCells
 	corrW := cfg.Map.CorridorWidth
 
+	// 负值不是哨兵也不是合法据点数：直接拒绝，不留到 placeHubs 零循环
+	// fall-through 后让 mstEdges 在空 centers 上 panic。不能只信任
+	// config.Validate——测试与 bot 直接构造 cfg 改字段，不走 main.go 的
+	// Validate 入口（审查 Important-1，「用值推断状态」型缺口）。
+	if cfg.Map.HubCount < 0 {
+		return nil, fmt.Errorf("mapgen: hub_count = %d，必须 ≥0", cfg.Map.HubCount)
+	}
+
 	// 图小到连一个据点（半径 hubR + 1 格边距）都摆不下时直接失败：
 	// 再往下走撒点循环的 RandIntn(W-2*margin) 会因 n<=0 panic。
 	if margin := hubR + 1; W < 2*margin+1 || H < 2*margin+1 {
@@ -78,11 +86,11 @@ func Generate(w *world.World, cfg *config.Config) (*Result, error) {
 			continue
 		}
 
-		// 据点开圆空地 + 中心 SpawnZone。
+		// 据点开圆空地（SpawnZone 稍后统一盖——走廊挖在据点之后，先标
+		// SpawnZone 会被 MST 边的 carveFloor 覆盖成普通地板，中心格语义丢失：
+		// 实测 21/21 中心格变 TileFloor、SpawnZone 计数 99/109（审查 Important-3））。
 		for _, c := range centers {
 			carveCircle(tr, c.cx, c.cy, hubR, world.TileFloor)
-			carveRect(tr, c.cx-spawnZoneHalfCells, c.cy-spawnZoneHalfCells,
-				c.cx+spawnZoneHalfCells, c.cy+spawnZoneHalfCells, world.TileSpawnZone)
 		}
 
 		// Prim MST（稳定 key 排序）连走廊。
@@ -90,6 +98,13 @@ func Generate(w *world.World, cfg *config.Config) (*Result, error) {
 		edges = append(edges, extraRingEdges(w, centers, edges)...)
 		for _, e := range edges {
 			carveCorridor(tr, centers[e.from], centers[e.to], corrW)
+		}
+
+		// SpawnZone 最后盖：作为最终态标记，不被任何后续挖掘覆盖。
+		// allReachable 判 Walkable（SpawnZone 可走），相对顺序不影响连通判定。
+		for _, c := range centers {
+			carveRect(tr, c.cx-spawnZoneHalfCells, c.cy-spawnZoneHalfCells,
+				c.cx+spawnZoneHalfCells, c.cy+spawnZoneHalfCells, world.TileSpawnZone)
 		}
 
 		// 连通验证：任一据点不可达就整轮重试（确定性——RNG 序列继续）。
@@ -289,6 +304,11 @@ func max2(a, b int) int {
 }
 
 // allReachable 从 centers[0] 做 4 邻 BFS，验证所有据点中心可达。
+//
+// 前提声明（审查 Minor-2）：「中心可达 ⇒ 玩家(r=0.3)可达」依赖 corrW ≥ 2
+// （2 格宽走廊里 4 邻路径贴格中心，玩家圆不会卡在缝里）。CorridorWidth=1
+// 是 Validate 允许值，届时中心可达但玩家过不去——需要改成 CircleFree 版
+// BFS。本仓 Default corrW=2，灰盒接受。
 func allReachable(tr *world.Terrain, W, H int, centers []cellPos) bool {
 	seen := make([]bool, W*H)
 	start := centers[0].cy*W + centers[0].cx

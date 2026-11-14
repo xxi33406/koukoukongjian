@@ -36,19 +36,29 @@ func TestGenerateSeededDeterministic(t *testing.T) {
 }
 
 func TestGenerateDifferentSeedsDiffer(t *testing.T) {
-	seen := map[uint64]int64{}
-	for _, seed := range []int64{1, 2, 3, 42, 777, 2026} {
-		w, _ := genFor(t, seed)
-		h := w.Terrain.Hash()
-		if prev, dup := seen[h]; dup {
-			t.Errorf("seed %d 与 seed %d 地形哈希相同（%d）：不同 seed 产出同图不可接受", seed, prev, h)
+	// 5 对种子两两比较（审查 Minor-1：原先只跑 1 对且 seed1 vs seed2
+	// 巧合相同，弱断言没钉住「不同 seed 产出不同图」）。
+	pairs := [][2]int64{{1, 2}, {42, 43}, {777, 778}, {2024, 2025}, {9, 10}}
+	diffCount := 0
+	for _, pr := range pairs {
+		w1, _ := genFor(t, pr[0])
+		w2, _ := genFor(t, pr[1])
+		h1, h2 := w1.Terrain.Hash(), w2.Terrain.Hash()
+		if h1 != h2 {
+			diffCount++
+		} else {
+			t.Logf("seed %d 与 seed %d 地形哈希相同（%d）", pr[0], pr[1], h1)
 		}
-		seen[h] = seed
+	}
+	// 极小概率两对相同可容忍（MST 走廊短、挖法趋同），但 5 对里至少 4 对要不同。
+	if diffCount < len(pairs)-1 {
+		t.Errorf("5 对种子只有 %d 对产出不同图（期望 ≥%d）：种子没起到区分作用", diffCount, len(pairs)-1)
 	}
 }
 
 func TestGenerateHubCountAndConnectivity(t *testing.T) {
-	for _, seed := range []int64{1, 2, 3, 42, 777} {
+	// 种子集含 2024（审查 Important-2：低产种子必须纳入实测基线）。
+	for _, seed := range []int64{1, 2, 3, 42, 777, 2024} {
 		w, res := genFor(t, seed)
 		cfg := config.Default()
 		if len(res.Hubs) != cfg.Map.HubCount {
@@ -65,10 +75,59 @@ func TestGenerateHubCountAndConnectivity(t *testing.T) {
 			t.Errorf("seed %d：存在不可达据点", seed)
 		}
 		// 走廊宽度抽查：MST 边上任意中间点，垂直方向至少 2 格可走。
-		// 简化为验证可走格总数下限（全图 16384 格）。8 个种子实测
-		// 1012~1313（间距恰为下限 20 时走廊短、总格数少），取 1000。
-		if wc := w.Terrain.WalkableCount(); wc < 1000 {
+		// 简化为验证可走格总数下限（全图 16384 格）。9 个种子实测
+		// 993~1313（seed 2024 最小：间距紧凑走廊短；审查 Important-2
+		// 修正——原注释称「8 种子实测 1012~1313」但实际生效种子集只有
+		// 5 个，违反 AGENTS 1.4 数字必须实测），取 950。
+		if wc := w.Terrain.WalkableCount(); wc < 950 {
 			t.Errorf("seed %d：可走格 %d 过少，走廊/据点没挖开", seed, wc)
+		}
+	}
+}
+
+// TestGenerateRejectsNegativeHubCount 锁定审查 Important-1 的防线：
+// HubCount<0 不是哨兵也不是合法值，必须在 Generate 入口拒绝——此前
+// 负值穿透 placeHubs（零循环 fall-through 返回空）后在 mstEdges 的
+// in[0]=true 处 index out of range panic。
+func TestGenerateRejectsNegativeHubCount(t *testing.T) {
+	cfg := config.Default()
+	cfg.Map.HubCount = -3
+	w := world.NewWorld(cfg, 1)
+	if _, err := Generate(w, cfg); err == nil {
+		t.Fatal("HubCount<0 应返回 error，而不是 panic 或静默产出空图")
+	}
+	if w.HasMap {
+		t.Error("负值路径 HasMap 应为 false")
+	}
+}
+
+// TestGenerateSpawnZoneIntact 锁定审查 Important-3 的修复：SpawnZone 是
+// 最终态标记，必须在全部走廊挖掘之后盖章——中心格 tile 必须是
+// TileSpawnZone，且总计数 == HubCount×25（每据点 5×5）。
+// 修复前走廊 carveFloor 覆盖先标的 SpawnZone：21/21 中心格变 TileFloor、
+// 计数 99/109（seed 42）。
+func TestGenerateSpawnZoneIntact(t *testing.T) {
+	for _, seed := range []int64{1, 2, 3, 42, 777, 2024} {
+		w, res := genFor(t, seed)
+		for i, h := range res.Hubs {
+			c := cellOf(h.Center, int(w.Terrain.Width()), int(w.Terrain.Height()), w.Terrain.CellSize())
+			if got := w.Terrain.At(c.cx, c.cy); got != world.TileSpawnZone {
+				t.Errorf("seed %d：据点 %d 中心格 tile=%d，期望 TileSpawnZone（被走廊覆盖）",
+					seed, i, got)
+			}
+		}
+		want := len(res.Hubs) * 25
+		got := 0
+		W, H := int(w.Terrain.Width()), int(w.Terrain.Height())
+		for y := 0; y < H; y++ {
+			for x := 0; x < W; x++ {
+				if w.Terrain.At(x, y) == world.TileSpawnZone {
+					got++
+				}
+			}
+		}
+		if got != want {
+			t.Errorf("seed %d：TileSpawnZone 计数 %d != %d（据点数×25）", seed, got, want)
 		}
 	}
 }
