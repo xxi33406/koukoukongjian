@@ -134,6 +134,10 @@ type MonsterState struct {
 	Flags     MonsterFlags
 	PoisonRem float64 // 位置死亡技能的"强化"累计值（spec L131）
 
+	// M3：仇恨打分的三路输入（回放一致性：只在 tick 循环内读写）。
+	AggroDmg [4]float64 // 近期伤害（指数遗忘：rescore 时 ×0.5）
+	AttackAt uint32     // 上次攻击的 tick（冷却判定）
+
 	// —— 计时器（单位：tick）——
 	AggroRescoreAt uint32
 	PathRecalcAt   uint32
