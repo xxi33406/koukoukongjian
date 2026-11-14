@@ -63,8 +63,16 @@ func TestNewMapgenFailDegradesNotPanic(t *testing.T) {
 }
 
 func testConfig() *config.Config {
-	// HubCount=0 关地图：room 层既有测试断言 M2 全空地行为
-	// （出生点、靶位、移动），生成的墙会改变这些几何前提。
+	// 默认开地图（HubCount=7 即 config.Default 原值）：M3 起出生点、靶环、
+	// 波次都挂在生成的地图据点上，room 层测试应默认走真实开图路径。
+	cfg := config.Default()
+	return cfg
+}
+
+// testConfigNoMap 是关图副本（HubCount=0 哨兵）：给依赖 M2「空白世界」几何
+// 前提的老测试用（出生点在画面正中心、靶环挂场心等）——生成的墙会改变这些
+// 前提。哪些测试必须用它见各测试自己的注释。
+func testConfigNoMap() *config.Config {
 	cfg := config.Default()
 	cfg.Map.HubCount = 0
 	return cfg
@@ -272,7 +280,10 @@ func TestNewDefaultsID(t *testing.T) {
 // 摆靶发生在 New 里、Run 之前，World 还没被 tick goroutine 独占，
 // 这里可以直接断言。靶子应摆成圆环、血量与半径按规格填好。
 func TestNewSpawnsDummyTargets(t *testing.T) {
-	cfg := testConfig()
+	// 关图（testConfigNoMap）：本测试断言靶环挂在"画面正中心 (w/2,h/2)"
+	// 这一 M2 空白世界几何前提；d4c7b20 起 HasMap 时靶环改挂出生据点
+	// 中心，开图路径的靶位断言由 spawnDummyTargets 挂点逻辑自身保证。
+	cfg := testConfigNoMap()
 	r := New(cfg, quietLogger(), Options{ID: "dummies", Seed: 42, DummyTargets: 4})
 	w := r.World
 

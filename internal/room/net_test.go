@@ -2,6 +2,7 @@ package room
 
 import (
 	"context"
+	"math"
 	"testing"
 	"time"
 
@@ -426,5 +427,34 @@ func TestRoomShutdownClosesAllSinks(t *testing.T) {
 				t.Fatalf("第 %d 个 sink 没被关闭", i)
 			}
 		}
+	}
+}
+
+// TestSpawnPointOnOpenGround 开地图的默认 config 下，4 个 slot 的出生点
+// 必须落在可走格上，且都在出生据点的触发半径内——出生点接入地图据点后，
+// 不允许再出现"生在墙里"或"生在据点外面"。
+func TestSpawnPointOnOpenGround(t *testing.T) {
+	r := New(testConfig(), quietLogger(), Options{ID: "t", Seed: 42})
+	if !r.World.HasMap {
+		t.Fatal("默认 testConfig 应开地图（HubCount=7）；本测试测的就是开图路径")
+	}
+	hub := r.World.Hubs[r.World.SpawnHub]
+	for slot := 0; slot < 4; slot++ {
+		p := r.spawnPoint(slot)
+		if !r.World.Terrain.WalkableAt(p) {
+			t.Errorf("slot %d 出生点 %v 不可走", slot, p)
+		}
+		if d := math.Sqrt(p.Sub(hub.Center).LenSq()); d > hub.RadiusM {
+			t.Errorf("slot %d 出生点 %v 距据点中心 %.1fm，超出半径 %.1fm", slot, p, d, hub.RadiusM)
+		}
+	}
+	// 环形错位的本意是 4 人不叠在一起；全中心重合说明错位没生效。
+	seen := map[world.Vec2]bool{}
+	for slot := 0; slot < 4; slot++ {
+		p := r.spawnPoint(slot)
+		if seen[p] {
+			t.Errorf("slot %d 出生点 %v 与先前 slot 重合", slot, p)
+		}
+		seen[p] = true
 	}
 }

@@ -65,6 +65,9 @@ type Room struct {
 	// events 是这一 tick 攒下的伤害/击杀事件，M2 只攒不发（快照带上它
 	// 属于 M3 的 UI 反馈）。每个 tick 开头用 [:0] 清空以复用底层数组。
 	events []world.DamageEvent
+	// wavesEnabled 是波次开关的落定值（Options 互斥裁定后的结果）。
+	// Task 10 波次系统接线前只有声明无消费；先落字段，接线时直接读。
+	wavesEnabled bool
 	// nextSnapshot 是本 tick 生成好、待网络层取走的快照。
 	// 这里不用它——快照直接写进每个 peer 的 sink。保留字段会误导，故无。
 
@@ -96,6 +99,9 @@ type Options struct {
 	// 无法从客户端看到任何战斗反馈。摆在 New 而不是 Run 里：
 	// Run 一旦走起来，World 就归 tick goroutine 独占。
 	DummyTargets int
+	// WavesEnabled 是 M3 据点波次开关。DummyTargets>0 时强制 false
+	//（互斥，见 New）：bot 压测路径只要静止靶，不想要波次怪的干扰。
+	WavesEnabled bool
 }
 
 // New 创建一个房间。
@@ -131,6 +137,15 @@ func New(cfg *config.Config, log *slog.Logger, opts Options) *Room {
 	if _, err := mapgen.Generate(r.World, cfg); err != nil {
 		log.Warn("mapgen: 地图生成失败，降级为无图世界", "room", opts.ID, "err", err)
 	}
+
+	// 波次与 DummyTargets 互斥：DummyTargets 优先（bot 压测路径不想要
+	// 波次怪的干扰），两者同给时禁用波次并告警，不报错——配置矛盾不该
+	// 让对局起不来。
+	waves := opts.WavesEnabled && opts.DummyTargets == 0
+	if opts.DummyTargets > 0 && opts.WavesEnabled {
+		log.Warn("room: -dummy-targets 与波次互斥，本次禁用波次")
+	}
+	r.wavesEnabled = waves
 
 	if opts.DummyTargets > 0 {
 		spawnDummyTargets(r.World, opts.DummyTargets)

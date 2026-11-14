@@ -3,6 +3,7 @@ package room
 import (
 	"context"
 	"errors"
+	"math"
 	"time"
 
 	"koukoukongjian/internal/game/systems"
@@ -166,12 +167,16 @@ func (r *Room) handleJoin(req JoinRequest) {
 // 让测试自己再算一遍同一套公式，等于世界尺寸一改就有一半用例以"怪物血量
 // 没下降"的形式静默失败——那是最难查的一类失败。
 //
-// HasMap 时出生在出生据点中心（审查 Important-4 临时接线：地图生成后
-// 图中心方阵大概率嵌墙，8 种子实测 100% 嵌墙）。正式的据点环错位出生在
-// Task 4 落到 net.go 的 handleJoin 接线时再展开。
+// HasMap 时出生在出生据点中心附近的小环错位（slot×90°，半径 1.0 m），
+// 4 人不叠在一起。环半径 1.0 m 的可走性依据：SpawnZone 5×5 格中心保证
+// 空地，且 Hub.Center 周围 HubRadiusCells=5 圆全空——1 m 偏移必可走
+// （docs/plans/2026-11-14-m3-world-waves.md Task 4）。地图未生成时
+// 退回旧方阵（HubCount=0 哨兵世界路径）。
 func (r *Room) spawnPoint(slot int) world.Vec2 {
 	if r.World.HasMap {
-		return r.World.Hubs[r.World.SpawnHub].Center
+		hub := r.World.Hubs[r.World.SpawnHub]
+		ang := float64(slot) * (math.Pi / 2)
+		return world.V(hub.Center.X+math.Cos(ang)*1.0, hub.Center.Y+math.Sin(ang)*1.0)
 	}
 	w := r.World.Terrain.WorldWidth()
 	h := r.World.Terrain.WorldHeight()
