@@ -72,6 +72,29 @@ func TestWaveTriggersOnEnterAndSpawns(t *testing.T) {
 	}
 }
 
+// 硬间隔的负路径（Task 7 审查 I-1）：开波后杀光但不推时钟，波次必须原地
+// 保持 Fighting 且 Wave 不动。mutation 实验删掉 waves.go 的 NextAt 判定后
+// 老用例仍全绿（它们每轮都推 w.Tick=hub.NextAt，阻塞分支从未走过负路径），
+// 这条用例补上缺口。
+func TestWaveHoldsBetweenWavesWithoutClockAdvance(t *testing.T) {
+	w, _ := newWaveWorld(t)
+	playerAtHub(t, w, 4)
+	hub := &w.Hubs[4]
+	UpdateWaves(w) // 第 1 波刷出，NextAt 已定
+
+	w.Monsters.Each(func(_ world.EntityID, m *world.MonsterState) bool {
+		m.HP = 0 // 杀光但不推时钟
+		return true
+	})
+	UpdateWaves(w)
+	if hub.State != world.HubFighting {
+		t.Fatalf("间隔未到应保持 Fighting，实际 %v", hub.State)
+	}
+	if hub.Wave != 1 {
+		t.Fatalf("间隔未到不得推进波次，实际 hub.Wave=%d", hub.Wave)
+	}
+}
+
 func TestWaveClearAdvancesThenCompletes(t *testing.T) {
 	w, cfg := newWaveWorld(t)
 	playerAtHub(t, w, 2)
@@ -165,4 +188,39 @@ func TestWaveIDsTrackedForKillDetection(t *testing.T) {
 			t.Errorf("WaveIDs[%d] 怪 HP=%v，刷出即应为满血", i, m.HP)
 		}
 	}
+}
+
+// 池满灰盒路径（Task 7 审查 M-1 探针转正）：怪物池被预塞满后 startWave
+// 必须少刷而非 panic，且 WaveN/WaveIDs 与实际刷出数一致——Task 9/10 的
+// 击杀检测读这两个字段，不一致就会把没刷出的怪当活着。
+func TestWaveSpawnsGracefullyWhenPoolFull(t *testing.T) {
+	w, cfg := newWaveWorld(t)
+	playerAtHub(t, w, 0)
+	hub := &w.Hubs[0]
+
+	// 预塞怪物池：Monsters 池容量 128（world.NewWorld），把 free 栈耗尽。
+	filled := 0
+	for {
+		_, m := w.Monsters.Spawn()
+		if m == nil {
+			break
+		}
+		m.HP, m.MaxHP = 50, 50
+		filled++
+	}
+	UpdateWaves(w)
+	// 池满时一只都刷不出来：状态进 Fighting（开波动作本身成立），
+	// WaveN=0、WaveIDs 前 WaveN 个有效——绝不能 panic 或计数错位。
+	if hub.State != world.HubFighting {
+		t.Fatalf("池满开波应仍进 Fighting，实际 %v", hub.State)
+	}
+	if hub.WaveN != 0 {
+		t.Fatalf("池满应刷 0 只，实际 WaveN=%d（预塞 %d 只）", hub.WaveN, filled)
+	}
+	for i := 0; i < hub.WaveN; i++ {
+		if w.Monsters.Get(hub.WaveIDs[i]) == nil {
+			t.Errorf("WaveIDs[%d] 指向无效槽位", i)
+		}
+	}
+	_ = cfg
 }

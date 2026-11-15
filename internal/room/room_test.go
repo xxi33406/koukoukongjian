@@ -306,9 +306,9 @@ func TestNewSpawnsDummyTargets(t *testing.T) {
 		dx := m.Pos.X - cx
 		dy := m.Pos.Y - cy
 		d := math.Sqrt(dx*dx + dy*dy)
-		// 圆环半径 6 m，允许 0.1 m 容差（浮点）。
-		if d < 5.9 || d > 6.1 {
-			t.Errorf("怪物 %v 距中心 = %.3f，期望在 6±0.1 圆环上（中心 %.1f,%.1f）", id, d, cx, cy)
+		// 圆环半径 4.5 m（Minor-4：从 6.0 收缩进据点空地圆 5m 内），0.1 m 容差。
+		if d < 4.4 || d > 4.6 {
+			t.Errorf("怪物 %v 距中心 = %.3f，期望在 4.5±0.1 圆环上（中心 %.1f,%.1f）", id, d, cx, cy)
 		}
 		return true
 	})

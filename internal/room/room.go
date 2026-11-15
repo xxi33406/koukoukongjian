@@ -178,10 +178,11 @@ func New(cfg *config.Config, log *slog.Logger, opts Options) *Room {
 // 于是"打中脚边的怪"与"打中远处的怪"在日志上看起来一样，查不出
 // 是射程问题还是碰撞问题。
 //
-// 半径 6 m：玩家出生在中心方阵（间距 3 m），6 m 保证靶子在方阵外圈，
-// 且落在步枪射程内（20 m/s × 1.2 s = 24 m）。
+// 半径 4.5 m：据点空地圆是 5 m（HubRadiusCells=5），M2 的 6 m 靶环在
+// 挂到据点中心后会越出空地圆嵌墙（审查 Minor-4）；4.5 m 留 0.5 m 余量，
+// 仍在方阵外圈（方阵间距 3 m）与步枪射程内。
 func spawnDummyTargets(w *world.World, n int) {
-	const ringRadius = 6.0
+	const ringRadius = 4.5
 	// HasMap 时靶环挂在出生据点上：图中心大概率是墙，靶子会嵌墙
 	// （审查 Important-4 同源问题）。
 	cx, cy := w.Terrain.WorldWidth()/2, w.Terrain.WorldHeight()/2

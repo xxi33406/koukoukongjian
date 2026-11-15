@@ -449,12 +449,18 @@ func TestSpawnPointOnOpenGround(t *testing.T) {
 		}
 	}
 	// 环形错位的本意是 4 人不叠在一起；全中心重合说明错位没生效。
-	seen := map[world.Vec2]bool{}
+	// 审查 Minor-3：只判"不重合"不钉间距——环半径退化到 0.1m 仍全绿。
+	// 出生环是 1m 半径 90° 错位：相邻两点 √2≈1.41m，对径 2.0m，
+	// 任意两点下限 1.41m，这里钉到 1.0m 留余量。
+	pts := make([]world.Vec2, 0, 4)
 	for slot := 0; slot < 4; slot++ {
-		p := r.spawnPoint(slot)
-		if seen[p] {
-			t.Errorf("slot %d 出生点 %v 与先前 slot 重合", slot, p)
+		pts = append(pts, r.spawnPoint(slot))
+	}
+	for i := 0; i < len(pts); i++ {
+		for j := i + 1; j < len(pts); j++ {
+			if d := math.Sqrt(pts[i].Sub(pts[j]).LenSq()); d < 1.0 {
+				t.Errorf("slot %d 与 slot %d 出生点相距 %.2fm，应 ≥1.0m（环错位失效退化为重合）", i, j, d)
+			}
 		}
-		seen[p] = true
 	}
 }
