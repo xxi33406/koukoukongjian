@@ -265,7 +265,9 @@ func (r *Room) drainInputs() {
 // 表现为"连上了但画面不动"。套一层 Envelope 后靠 oneof 的字段号区分类型。
 func (r *Room) broadcast() {
 	// 事件映射每帧做一次，所有 peer 共享同一批 *GameEvent——
-	// GameEvent 在快照里是只读载荷，共享安全；nil 时不塞字段。
+	// 共享安全的前提：Marshal 全部在 tick goroutine 里串行完成
+	//（protobuf Marshal 会写 sizeCache，若未来并行 Marshal 必须
+	// 给每个 peer 拷一份）。nil 时不塞字段。
 	// 放在 peers.each 外面：映射是纯函数，逐 peer 重复算 4 遍是浪费。
 	var evs []*proto.GameEvent
 	if len(r.events) > 0 {

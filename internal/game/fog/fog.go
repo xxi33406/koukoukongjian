@@ -49,7 +49,8 @@ func (f *State) LitCount() int {
 func (f *State) Reveal(w *world.World, radius float64) []int {
 	f.scratch = f.scratch[:0]
 	if w == nil || w.Terrain == nil {
-		return nil // 防御：地形未装配（HasMap=false 短路约定在接线层）
+		return nil // 防御：零值 World（测试构造）的 Terrain 为 nil；
+		// 生产路径 HasMap=false 时 Terrain 恒非 nil（短路在 room 接线层判 HasMap）
 	}
 	rSq := (radius + 1) * (radius + 1) // +1 格宽余量，避免浮点边缘抖动反复亮灭
 	w.Players.Each(func(_ world.EntityID, p *world.PlayerState) bool {
@@ -58,7 +59,7 @@ func (f *State) Reveal(w *world.World, radius float64) []int {
 		}
 		cx := int(p.Pos.X) // cellSize=1；cellSize 可配时改 floor(p.X/cellSize)
 		cy := int(p.Pos.Y)
-		r := int(radius) + 1
+		r := int(radius + 1) // 判定半径是 radius+1（见 rSq），遍历半径用同一舍入，防非整数 radius 时遍历框盖不满判定圆
 		for dy := -r; dy <= r; dy++ {
 			for dx := -r; dx <= r; dx++ {
 				// 格中心距玩家位置 ≤ radius+1 即点亮（粗圆，灰盒接受）。
