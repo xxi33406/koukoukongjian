@@ -368,9 +368,9 @@ func TestRoomMonsterChasesPlayer(t *testing.T) {
 	var mID world.EntityID
 	r, _ := startRoomWith(t, "ai", func(r *Room) {
 		// 摆怪在出生据点旁：hub.Center.Add(world.V(4.5,0))。计划原文的
-		// +6 在 seed 7 这张图上是墙（探针实测：空地圆边缘 +5.0m，cell 86
-		// 起 tile=1；FindPath/LineWalkable 对嵌墙点全断）——任务书要求
-		// 「别摆进墙」，实测改到空地圆内。距玩家出生点（slot0 +1m 环）
+		// +6 在 seed 7 这张图上是墙（探针实测：沿 +X 首个不可走点 +5.50m，
+		// cell 86 起 tile=1；FindPath/LineWalkable 对嵌墙点全断）——
+		// 任务书要求「别摆进墙」，实测改到空地圆内。距玩家出生点（slot0 +1m 环）
 		// 约 3.5m：SightRange=20 内、AttackRange 1.9m 外。
 		hub := r.World.Hubs[r.World.SpawnHub]
 		mID = spawnMonAt(r, hub.Center.Add(world.V(4.5, 0)), 50)
@@ -380,18 +380,22 @@ func TestRoomMonsterChasesPlayer(t *testing.T) {
 
 	// 怪开始追人 = 它的位置随 tick 变化。快照坐标是量化后的 int32，
 	// 位置变化直接比量化值（不反量化也行，量纲一致即可比较）。
+	// hasPrev 显式记录"已见首帧"：量化 X==0 是合法坐标（PosScale 量化
+	// 后 0 即 <0.004m），拿 lastX!=0 兼做哨兵会把合法零值当"未设置"。
 	var lastX int32
+	hasPrev := false
 	moved := false
 	waitSnapshot(t, sink, 5*time.Second, "怪物移动", func(s *proto.Snapshot) bool {
 		e, ok := snapshotEntities(s)[entityRef{proto.EntityKind_ENTITY_KIND_MONSTER, uint32(mID)}]
 		if !ok || e.Pos == nil {
 			return false
 		}
-		if lastX != 0 && e.Pos.X != lastX {
+		if hasPrev && e.Pos.X != lastX {
 			moved = true
 			return true
 		}
 		lastX = e.Pos.X
+		hasPrev = true
 		return false
 	})
 	if !moved {

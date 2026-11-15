@@ -415,9 +415,14 @@ func (r *Room) subStep(sub int) {
 	// 判定写错与伤害公式写错的表现完全一样。
 	hits := systems.Collide(w)
 
-	// 2.5 伤害结算：唯一入口，死亡只标记不回收
-	r.events = append(r.events, systems.ApplyHits(w, hits)...)
-	r.applyAggro(r.events)
+	// 2.5 伤害结算：唯一入口，死亡只标记不回收。
+	// 增量切片必须单独持有：applyAggro 只喂本子步的增量——
+	// r.events 是全 tick 累积流（fog/broadcast 还要读），传累积流会让
+	// 同一条伤害事件每子步重放回写（SubSteps=3 时一条 10 点伤害被记成
+	// 10/25/45，权重放大且越早的伤害被重放越多，仇恨时序反转）。
+	inc := systems.ApplyHits(w, hits)
+	r.events = append(r.events, inc...)
+	r.applyAggro(inc)
 
 	// 2.6 死亡清理：回收 + 世代 +1
 	r.events = append(r.events, systems.Reap(w)...)
@@ -430,6 +435,8 @@ func (r *Room) subStep(sub int) {
 // 会写——缺了这一步，打分静默退化成两路（审查 I1：全仓库无写入者）。
 // 回写放 room 接线层而不是 systems.ApplyHits：不改 systems.ApplyHits
 // 签名（它的产出是事件流，改它等于让伤害结算做怪物状态写）。
+// 契约：每条事件恰好回写一次——调用方必须传增量（本子步 ApplyHits
+// 的返回值），不能传累积流 r.events（见 subStep 2.5 注释）。
 //
 // 界检查：怪物池槽位下标上界是 capacity+1（第 4 个玩家 Index()==4），
 // AggroDmg 是 [5]float64——写之前判 len，防未来池容量改动越界 panic。
