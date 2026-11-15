@@ -40,8 +40,11 @@ func BenchmarkCollide(b *testing.B) {
 	}
 
 	b.ResetTimer()
+	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
-		// 每轮把 PrevPos 拉回 Pos，避免子弹真的飞走导致命中集漂移。
+		// 每轮把 PrevPos 拉回 Pos：扫掠线段退化为零长（点判定），
+		// SegmentIntersectsCircle 对 den==0 有 t=0 特判，几何逐轮恒定，
+		// 命中集不随子弹推进漂移，bench 测的是稳定工作集。
 		w.Bullets.Each(func(_ world.EntityID, bl *world.BulletState) bool {
 			bl.PrevPos = bl.Pos
 			return true

@@ -33,7 +33,7 @@ func main() {
 
 func run() error {
 	var (
-		addr     = flag.String("addr", "127.0.0.1:27015", "服务器地址")
+		addr     = flag.String("addr", "127.0.0.1:7777", "服务器地址（须与服务器 bind 端口一致）")
 		name     = flag.String("name", "bot", "玩家名")
 		count    = flag.Int("count", 1, "并发 bot 数量")
 		duration = flag.Duration("duration", 10*time.Second, "运行时长")
@@ -105,7 +105,7 @@ type bot struct {
 	// 逻辑见 entities.go；单测在 entities_test.go。
 	entities map[uint32]entInfo
 
-	// selfID 是自己的实体 id（来自快照 self 字段）；InvalidSelfID 表示
+	// selfID 是自己的实体 id（来自快照 self 字段）；invalidSelfID 表示
 	// 还没收到过带 self 的快照。
 	selfID uint32
 
@@ -126,7 +126,7 @@ func runBot(ctx context.Context, addr, name string, idx, inputHz int, circle, at
 	}
 	defer c.Close()
 
-	b := &bot{name: name, idx: idx, entities: make(map[uint32]entInfo)}
+	b := &bot{name: name, idx: idx, selfID: invalidSelfID, entities: make(map[uint32]entInfo)}
 
 	// Client.Run 会阻塞在读循环上，所以放独立 goroutine。
 	runErr := make(chan error, 1)

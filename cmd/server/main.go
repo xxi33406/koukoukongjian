@@ -37,7 +37,7 @@ func run() error {
 		seed     = flag.Int64("seed", 0, "世界随机种子，0 表示用当前时间")
 		duration = flag.Duration("duration", 0, "运行时长，0 表示一直运行（用于冒烟测试）")
 		logLevel = flag.String("log-level", "", "覆盖配置里的日志级别")
-		bind     = flag.String("bind", "", "覆盖配置里的监听地址，如 0.0.0.0:27015")
+		bind     = flag.String("bind", "", "覆盖配置里的监听地址，如 0.0.0.0:7777")
 		noNet    = flag.Bool("no-net", false, "不启动网络层，只跑 tick 循环（M0 冒烟用）")
 
 		dummyTargets = flag.Int("dummy-targets", 0, "开局摆放的静止靶数量（端到端验证用，0 表示不摆）")
