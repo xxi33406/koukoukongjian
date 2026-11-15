@@ -264,9 +264,21 @@ func (r *Room) drainInputs() {
 // 解得到 err=nil、tick=0。两种误判都不报错，客户端只会静默丢掉所有快照，
 // 表现为"连上了但画面不动"。套一层 Envelope 后靠 oneof 的字段号区分类型。
 func (r *Room) broadcast() {
+	// 事件映射每帧做一次，所有 peer 共享同一批 *GameEvent——
+	// GameEvent 在快照里是只读载荷，共享安全；nil 时不塞字段。
+	// 放在 peers.each 外面：映射是纯函数，逐 peer 重复算 4 遍是浪费。
+	var evs []*proto.GameEvent
+	if len(r.events) > 0 {
+		evs = proto.EventsToProto(r.events)
+	}
+
 	r.peers.each(func(p *peer) {
 		snap, _ := p.builder.Build(r.World, p.id, false)
 		snap.AckedInputTick = uint32(p.lastInputSeq)
+		snap.Events = evs // M3 起伤害/击杀事件随帧下发
+		if len(r.fogDelta) > 0 {
+			snap.FogDelta = r.fogDelta // 本 tick 新点亮的迷雾格（空则不塞，省带宽）
+		}
 
 		data, err := proto.Marshal(&proto.Envelope{
 			Body: &proto.Envelope_Snapshot{Snapshot: snap},

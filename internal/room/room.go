@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"koukoukongjian/internal/config"
+	"koukoukongjian/internal/game/fog"
 	"koukoukongjian/internal/game/mapgen"
 	"koukoukongjian/internal/game/systems"
 	"koukoukongjian/internal/game/world"
@@ -65,6 +66,14 @@ type Room struct {
 	// events 是这一 tick 攒下的伤害/击杀事件，M2 只攒不发（快照带上它
 	// 属于 M3 的 UI 反馈）。每个 tick 开头用 [:0] 清空以复用底层数组。
 	events []world.DamageEvent
+	// fog 是队伍共享迷雾状态（HasMap 房间才有，否则为 nil）。
+	// 只在 tick 循环里读写——Run 起来之后 World 归 tick goroutine 独占，
+	// fog 点灯依据玩家位置，与 World 同生命周期同并发约束。
+	fog *fog.State
+	// fogDelta 是本 tick 要随快照下发的迷雾增量（新点亮格索引）。
+	// fog.Reveal 返回内部复用切片，必须拷进自己的数组再上快照；
+	// 每 tick 用 [:0] 清空复用，空增量时置 nil 不下发（省带宽）。
+	fogDelta []uint64
 	// wavesEnabled 是波次开关的落定值（Options 互斥裁定后的结果）。
 	// Task 10 波次系统接线前只有声明无消费；先落字段，接线时直接读。
 	wavesEnabled bool
@@ -136,6 +145,13 @@ func New(cfg *config.Config, log *slog.Logger, opts Options) *Room {
 	// HubCount==0 的哨兵世界（测试用）走 Generate 内部哨兵分支，同样全空地。
 	if _, err := mapgen.Generate(r.World, cfg); err != nil {
 		log.Warn("mapgen: 地图生成失败，降级为无图世界", "room", opts.ID, "err", err)
+	}
+
+	// 迷雾状态与地形格数绑定（fog 格与 Terrain 格同尺寸）。只在开图房间
+	// 建立：降级世界（HasMap=false）没有墙也没有据点，迷雾短路为不下发。
+	// 格数用 Terrain.Width()/Height()（格数，非米）——fog.New 的 w/h 单位是格。
+	if r.World.HasMap {
+		r.fog = fog.New(r.World.Terrain.Width(), r.World.Terrain.Height())
 	}
 
 	// 波次与 DummyTargets 互斥：DummyTargets 优先（bot 压测路径不想要
@@ -323,7 +339,22 @@ func (r *Room) tick() {
 	r.fire()
 
 	// 4. 世界级结算：M2 只有事件累积（r.events 已在子步里攒好）
-	// 5. 编码快照
+	// 5. 迷雾增量：Reveal 返回内部复用切片，必须立刻拷进 r.fogDelta——
+	//    下一次 Reveal 会覆写它。先算后广播（Reveal 用的是本 tick 子步末
+	//    的玩家位置），顺序固定保证回放一致。空增量置 nil，快照不带
+	//    fog_delta 字段，省一次 varint 长度前缀与带宽。
+	if r.fog != nil {
+		r.fogDelta = r.fogDelta[:0]
+		if inc := r.fog.Reveal(r.World, r.cfg.Fog.RevealRadius); len(inc) > 0 {
+			for _, idx := range inc {
+				r.fogDelta = append(r.fogDelta, uint64(idx))
+			}
+		}
+	} else {
+		r.fogDelta = nil
+	}
+
+	// 6. 编码快照
 	r.broadcast()
 
 	w.Tick++

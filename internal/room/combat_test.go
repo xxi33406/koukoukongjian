@@ -276,3 +276,49 @@ func TestRoomAutoAimWhenNoDirection(t *testing.T) {
 		return ok && got < hp
 	})
 }
+
+// TestRoomSnapshotCarriesEvents 验证 M1 预留的 Snapshot.Events 字段：
+// 击杀事件随快照下发，A=击杀者（玩家实体 id）、B=被击杀者（怪 id）。
+func TestRoomSnapshotCarriesEvents(t *testing.T) {
+	var mID world.EntityID
+	r, _ := startRoomWith(t, "events", func(r *Room) {
+		// 10 HP：一发步枪伤害正好击杀，击杀事件由 ResolveDamage 的 IsKill 产出。
+		p := r.spawnPoint(0)
+		mID = spawnTarget(r, world.V(p.X+3, p.Y), 10)
+	})
+
+	res, sink := joinPlayer(t, r, "shooter")
+	r.SendInput(res.Slot, InputCommand{
+		Seq: 1, Aim: 0, HasAim: true, Buttons: ButtonAttack,
+	})
+
+	var kill *proto.GameEvent
+	waitSnapshot(t, sink, 3*time.Second, "击杀事件", func(s *proto.Snapshot) bool {
+		for _, ev := range s.Events {
+			if ev.Kind == proto.GameEventKind_GAME_EVENT_KIND_KILL {
+				kill = ev
+				return true
+			}
+		}
+		return false
+	})
+	if kill == nil {
+		t.Fatal("未收到击杀事件")
+	}
+	if kill.A != uint32(res.EntityID) || kill.B != uint32(mID) {
+		t.Errorf("击杀事件 a/b = %d/%d, 期望 玩家 %d / 怪 %d",
+			kill.A, kill.B, uint32(res.EntityID), uint32(mID))
+	}
+}
+
+// TestRoomSnapshotCarriesFogDelta 验证 M1 预留的 Snapshot.FogDelta 字段：
+// HasMap 房间里玩家加入后首 tick 必有新点亮格（出生圈），随快照下发。
+func TestRoomSnapshotCarriesFogDelta(t *testing.T) {
+	// startRoomWith 用 testConfig()，默认开图（HubCount=7）→ fog 状态已建。
+	r, _ := startRoomWith(t, "fogdelta", nil)
+	_, sink := joinPlayer(t, r, "scout")
+
+	waitSnapshot(t, sink, 3*time.Second, "迷雾增量", func(s *proto.Snapshot) bool {
+		return len(s.FogDelta) > 0
+	})
+}
