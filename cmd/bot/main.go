@@ -99,7 +99,22 @@ type bot struct {
 
 	// tick 是客户端自增的输入序号，服务端会回显它。
 	tick atomic.Uint32
+
+	// entities 是快照流重放出的在场实体表（-v 实体行的数据源），
+	// 只在 recvSnapshots 那个 goroutine 里读写，无需加锁。
+	// 逻辑见 entities.go；单测在 entities_test.go。
+	entities map[uint32]entInfo
+
+	// selfID 是自己的实体 id（来自快照 self 字段）；InvalidSelfID 表示
+	// 还没收到过带 self 的快照。
+	selfID uint32
+
+	kills  atomic.Uint64 // 击杀：KILL 事件的击杀者（A）是自己
+	deaths atomic.Uint64 // 阵亡：KILL/DEATH 事件的被击杀者（B）是自己
 }
+
+// invalidSelfID 与 world.InvalidID 对齐（proto 层不 import world，本地镜像）。
+const invalidSelfID uint32 = 0
 
 func runBot(ctx context.Context, addr, name string, idx, inputHz int, circle, attack, holdAim, verbose bool,
 	snaps, recv *atomic.Uint64) error {
@@ -111,7 +126,7 @@ func runBot(ctx context.Context, addr, name string, idx, inputHz int, circle, at
 	}
 	defer c.Close()
 
-	b := &bot{name: name, idx: idx}
+	b := &bot{name: name, idx: idx, entities: make(map[uint32]entInfo)}
 
 	// Client.Run 会阻塞在读循环上，所以放独立 goroutine。
 	runErr := make(chan error, 1)
@@ -157,6 +172,8 @@ func runBot(ctx context.Context, addr, name string, idx, inputHz int, circle, at
 	fmt.Printf("[%s] 快照 %d 份，收包 %d 个，发包 %d 个，重传中 %d，丢发送 %d\n",
 		b.name, b.snaps.Load(), st.RecvPackets, st.SentPackets,
 		st.ReliableInFly, st.DroppedSend)
+
+	fmt.Printf("[%s] 击杀 %d，阵亡 %d\n", b.name, b.kills.Load(), b.deaths.Load())
 
 	if b.snaps.Load() == 0 {
 		return fmt.Errorf("一份快照都没收到")
@@ -332,6 +349,10 @@ func (b *bot) sendInputs(ctx context.Context, c *netx.Client, hz int, circle, at
 
 // recvSnapshots 收快照并统计。
 func (b *bot) recvSnapshots(ctx context.Context, c *netx.Client, verbose bool) {
+	// 实体行节流：快照 20Hz，全打会刷屏；每秒一行足够观察波次刷怪。
+	var lastEntLine time.Time
+	var kills, deaths uint64
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -356,6 +377,43 @@ func (b *bot) recvSnapshots(ctx context.Context, c *netx.Client, verbose bool) {
 		}
 		snap := body.Snapshot
 		b.snaps.Add(1)
+		if snap.Self != nil {
+			b.selfID = snap.Self.EntityId
+		}
+
+		// —— 实体表重放 ——
+		for _, d := range snap.Adds {
+			b.applyDelta(d)
+		}
+		for _, d := range snap.Updates {
+			b.applyDelta(d)
+		}
+		for _, id := range snap.Removes {
+			delete(b.entities, id)
+		}
+
+		// —— 事件统计 ——
+		// KILL：A=击杀者、B=被击杀者；DEATH：A 无效（Reap 兜底）、B=死者。
+		// 玩家被怪打死走 KILL（A=怪）；A==0 的 DEATH 是清理死亡实体。
+		for _, ev := range snap.Events {
+			switch ev.Kind {
+			case proto.GameEventKind_GAME_EVENT_KIND_KILL:
+				if ev.A == b.selfID {
+					kills++
+					b.kills.Store(kills)
+				}
+				if ev.B == b.selfID {
+					deaths++
+					b.deaths.Store(deaths)
+				}
+			case proto.GameEventKind_GAME_EVENT_KIND_DEATH:
+				if ev.B == b.selfID {
+					deaths++
+					b.deaths.Store(deaths)
+				}
+			}
+		}
+
 		if snap.Self == nil && b.snaps.Load() > 1 {
 			// 第一份快照可能刚好落在自己加入之前；之后每份都该有 self。
 			if verbose {
@@ -371,6 +429,15 @@ func (b *bot) recvSnapshots(ctx context.Context, c *netx.Client, verbose bool) {
 			fmt.Printf("[%s] tick=%d self=(%.1f,%.1f) adds=%d upd=%d rem=%d\n",
 				b.name, snap.ServerTick, x, y,
 				len(snap.Adds), len(snap.Updates), len(snap.Removes))
+		}
+
+		// —— -v 实体行：每秒一行，前 8 个实体 ——
+		//
+		// 端到端验证靠这行判断波次是否刷怪（M 数量变化）与怪是否在动
+		// （坐标变化）。只打前 8 个避免弹幕期刷屏；怪多时看 M 计数即可。
+		if verbose && time.Since(lastEntLine) >= time.Second {
+			lastEntLine = time.Now()
+			fmt.Printf("[%s] %s\n", b.name, formatEntities(b.entities, 8))
 		}
 	}
 }

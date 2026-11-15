@@ -41,6 +41,7 @@ func run() error {
 		noNet    = flag.Bool("no-net", false, "不启动网络层，只跑 tick 循环（M0 冒烟用）")
 
 		dummyTargets = flag.Int("dummy-targets", 0, "开局摆放的静止靶数量（端到端验证用，0 表示不摆）")
+		waves        = flag.Bool("waves", false, "启用据点波次（M3）；与 -dummy-targets 互斥，互斥裁定在 room.New 内")
 	)
 	flag.Parse()
 
@@ -76,7 +77,7 @@ func run() error {
 		s = nowSeed()
 	}
 
-	r := room.New(cfg, log, room.Options{ID: "room-1", Seed: s, DummyTargets: *dummyTargets})
+	r := room.New(cfg, log, room.Options{ID: "room-1", Seed: s, DummyTargets: *dummyTargets, WavesEnabled: *waves})
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
