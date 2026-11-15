@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"koukoukongjian/internal/config"
+	"koukoukongjian/internal/game/ai"
 	"koukoukongjian/internal/game/fog"
 	"koukoukongjian/internal/game/mapgen"
 	"koukoukongjian/internal/game/systems"
@@ -328,6 +329,33 @@ func (r *Room) tick() {
 	// 1. 重建空间索引（每 tick 一次，不是每子步）。
 	w.Grid.Rebuild(w.Monsters, w.Bullets, w.Players)
 
+	// 1.5 波次（M3 Task 10）：每 tick 一次，在子步之外——与迷雾 Reveal、
+	// fire 同款"世界级结算"节拍。刷怪走 w.RandFloat64 包装，RNG 调用计数
+	// 完整、回放一致。UpdateWaves 自带防御（Wav/Terrain/Hubs 未装配时
+	// no-op），但 wavesEnabled=false 的 M2 房间连函数都不该进：降级世界
+	// 没有据点，短路语义与 fog（r.fog==nil）保持一致。
+	if r.wavesEnabled {
+		systems.UpdateWaves(r.World)
+	}
+
+	// 2. AI 决策（M3 Task 10）：每 tick 一次，循环放在子步循环之外、
+	//    fire 之前。这是硬要求 2 的契约，不是实现细节：
+	//    UpdateMonster 的计时器（AggroRescoreAt/PathRecalcAt 按
+	//    w.AggroRescoreTicks/w.PathRecalcTicks 判界、AttackAt 按 w.Tick
+	//    判冷却）都按"调用次数 == tick 数"自增——错接到子步里，SubSteps=3
+	//    时计时器 3 倍速跑，rescore/重路径/攻击频率全部失真（计划正文把
+	//    AI 写进 subStep，Lead 已裁定以硬要求 2 为准）。dt 传子步步长
+	//    r.subDt，只用于沿路径的移动距离积分，与计时器无关。
+	//    HasMap 短路：无图世界没有据点也没有墙，AI 的寻路/视线无意义；
+	//    w.Mon 理论上恒非 nil（NewWorld 装配），防御判空保持与 ai 包
+	//    RescoreAggro 的防御口径一致。
+	if r.World.HasMap && w.Mon != nil {
+		w.Monsters.Each(func(_ world.EntityID, m *world.MonsterState) bool {
+			ai.UpdateMonster(w, m, r.subDt)
+			return true
+		})
+	}
+
 	// 2~3. 子步内：移动 → 碰撞 → 伤害 → 死亡清理
 	for sub := 0; sub < r.subSteps; sub++ {
 		r.subStep(sub)
@@ -389,9 +417,40 @@ func (r *Room) subStep(sub int) {
 
 	// 2.5 伤害结算：唯一入口，死亡只标记不回收
 	r.events = append(r.events, systems.ApplyHits(w, hits)...)
+	r.applyAggro(r.events)
 
 	// 2.6 死亡清理：回收 + 世代 +1
 	r.events = append(r.events, systems.Reap(w)...)
+}
+
+// applyAggro 把本子步伤害事件回写进怪物的仇恨表（硬要求 1）。
+//
+// ApplyHits 不改怪物状态（见 subStep 2.5 注释），而仇恨三路打分的
+// 0.6 权重「近期伤害」路（ai.RescoreAggro 读 m.AggroDmg）没有任何系统
+// 会写——缺了这一步，打分静默退化成两路（审查 I1：全仓库无写入者）。
+// 回写放 room 接线层而不是 systems.ApplyHits：不改 systems.ApplyHits
+// 签名（它的产出是事件流，改它等于让伤害结算做怪物状态写）。
+//
+// 界检查：怪物池槽位下标上界是 capacity+1（第 4 个玩家 Index()==4），
+// AggroDmg 是 [5]float64——写之前判 len，防未来池容量改动越界 panic。
+// 尸体（Reap 已 Kill）的 Get 返回 nil，天然跳过。
+func (r *Room) applyAggro(evs []world.DamageEvent) {
+	if len(evs) == 0 {
+		return
+	}
+	w := r.World
+	for _, ev := range evs {
+		if !ev.Src.IsValid() {
+			continue // 环境伤害/近战（Src=InvalidID）不记仇恨
+		}
+		m := w.Monsters.Get(ev.Dst)
+		if m == nil {
+			continue // 目标不是怪或已死
+		}
+		if i := int(ev.Src.Index()); i < len(m.AggroDmg) {
+			m.AggroDmg[i] += ev.Amount
+		}
+	}
 }
 
 // fire 让每个在座玩家按当前按键尝试开火。

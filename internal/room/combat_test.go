@@ -102,7 +102,17 @@ func TestInputWithoutAimKeepsPrevious(t *testing.T) {
 // 存在两份实现——两份的那一天起，"给房间加一个启动参数"就只会改到一份。
 func startRoomWith(t *testing.T, cfgName string, setup func(*Room)) (*Room, context.CancelFunc) {
 	t.Helper()
-	r := New(testConfig(), quietLogger(), Options{ID: cfgName, Seed: 7})
+	return startRoomWithOpts(t, cfgName, Options{ID: cfgName, Seed: 7}, setup)
+}
+
+// startRoomWithOpts 是 startRoomWith 的全参形态：波次开关是 Options 级的
+// （New 里与 DummyTargets 互斥裁定，room.go:160 waves := opts.WavesEnabled &&
+// opts.DummyTargets == 0），配置层变体表达不了它——startRoomWith 的第二参
+// 只是快照 ID，不是配置选择器（testConfig() 恒开图）。M3 Task 10 的波次
+// 用例从这条路开 WavesEnabled。
+func startRoomWithOpts(t *testing.T, id string, opts Options, setup func(*Room)) (*Room, context.CancelFunc) {
+	t.Helper()
+	r := New(testConfig(), quietLogger(), opts)
 	if setup != nil {
 		setup(r)
 	}
@@ -121,7 +131,7 @@ func startRoomWith(t *testing.T, cfgName string, setup func(*Room)) (*Room, cont
 			// 用 Errorf 不用 Fatalf：Cleanup 里 Fatalf 会 Goexit，
 			// 把注册在它之前的其他 Cleanup 一起跳过，本来能报的失败
 			// 就报不出来了（既有 startRoom 用的也是 Errorf）。
-			t.Errorf("房间 %s 未在 2 秒内退出", cfgName)
+			t.Errorf("房间 %s 未在 2 秒内退出", id)
 		}
 	})
 	return r, cancel
@@ -320,5 +330,84 @@ func TestRoomSnapshotCarriesFogDelta(t *testing.T) {
 
 	waitSnapshot(t, sink, 3*time.Second, "迷雾增量", func(s *proto.Snapshot) bool {
 		return len(s.FogDelta) > 0
+	})
+}
+
+// ——————————————————————————————————————————————————————————————
+// M3 Task 10：AI 与波次接线（计划 docs/plans/2026-11-14-m3-world-waves.md
+// Task 10）。全部走快照断言，绝不直接读写 r.World——tick goroutine 独占
+// （AGENTS.md §2.5），测试 goroutine 碰它就是 -race 红灯。
+// ——————————————————————————————————————————————————————————————
+
+// spawnMonAt 在指定位置摆一只怪并返回它的 ID。spawnTarget 的别名：
+// 计划 Task 10 用例用它，AI 测试的"摆怪"与"摆静止靶"是同一件事
+// （Monsters.Spawn + 摆位摆血），不改 spawnTarget 本体、不加第二个实现。
+// 只能在 startRoomWith 的 setup 回调里调用（Run 之前，无竞争）。
+func spawnMonAt(r *Room, pos world.Vec2, hp float64) world.EntityID {
+	return spawnTarget(r, pos, hp)
+}
+
+// monsterCount 数这一帧快照里有多少只怪。
+//
+// 快照没有独立的"怪物列表"字段——怪物与玩家/子弹共用 Adds/Updates 增量流，
+// 按 Kind 过滤（entityRef 带 Kind 的教训见上面 snapshotEntities 的注释）。
+// 注意口径：增量流只含"本帧有变化的实体"，全量帧含全部存活实体；怪物被
+// AI 推动后每帧都在 Updates 里，计数因此有效。不能拿它当精确存活数用，
+// 波次用例只断言 ≥ 门槛，够用。
+func monsterCount(s *proto.Snapshot) int {
+	n := 0
+	for ref := range snapshotEntities(s) {
+		if ref.kind == proto.EntityKind_ENTITY_KIND_MONSTER {
+			n++
+		}
+	}
+	return n
+}
+
+func TestRoomMonsterChasesPlayer(t *testing.T) {
+	var mID world.EntityID
+	r, _ := startRoomWith(t, "ai", func(r *Room) {
+		// 摆怪在出生据点旁：hub.Center.Add(world.V(4.5,0))。计划原文的
+		// +6 在 seed 7 这张图上是墙（探针实测：空地圆边缘 +5.0m，cell 86
+		// 起 tile=1；FindPath/LineWalkable 对嵌墙点全断）——任务书要求
+		// 「别摆进墙」，实测改到空地圆内。距玩家出生点（slot0 +1m 环）
+		// 约 3.5m：SightRange=20 内、AttackRange 1.9m 外。
+		hub := r.World.Hubs[r.World.SpawnHub]
+		mID = spawnMonAt(r, hub.Center.Add(world.V(4.5, 0)), 50)
+	})
+
+	_, sink := joinPlayer(t, r, "bait")
+
+	// 怪开始追人 = 它的位置随 tick 变化。快照坐标是量化后的 int32，
+	// 位置变化直接比量化值（不反量化也行，量纲一致即可比较）。
+	var lastX int32
+	moved := false
+	waitSnapshot(t, sink, 5*time.Second, "怪物移动", func(s *proto.Snapshot) bool {
+		e, ok := snapshotEntities(s)[entityRef{proto.EntityKind_ENTITY_KIND_MONSTER, uint32(mID)}]
+		if !ok || e.Pos == nil {
+			return false
+		}
+		if lastX != 0 && e.Pos.X != lastX {
+			moved = true
+			return true
+		}
+		lastX = e.Pos.X
+		return false
+	})
+	if !moved {
+		t.Error("怪物应朝玩家移动（AI 未接线时它永远静止）")
+	}
+}
+
+func TestRoomWaveSpawnsAroundHub(t *testing.T) {
+	// WavesEnabled=true + DummyTargets=0 → New 落定 r.wavesEnabled=true。
+	// 玩家 joinPlayer 后出生在出生据点中心 1 m 环上，半径 5 m 的触发圈
+	// 直接命中，无需移动输入——handleJoin 默认出生即进圈。
+	r, _ := startRoomWithOpts(t, "waves", Options{ID: "waves", Seed: 7, WavesEnabled: true}, nil)
+	_, sink := joinPlayer(t, r, "camper")
+
+	// 波次开启 + 玩家在圈内 → 几秒内快照怪物数 ≥ MonstersPerWave(4)。
+	waitSnapshot(t, sink, 5*time.Second, "波次刷怪", func(s *proto.Snapshot) bool {
+		return monsterCount(s) >= 4
 	})
 }
