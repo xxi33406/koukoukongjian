@@ -133,7 +133,16 @@ func UpdateMonster(w *world.World, m *world.MonsterState, dt float64) {
 		m.Vel = world.Vec2{}
 		if w.Tick-m.AttackAt >= attackCooldownTicks(w) {
 			m.AttackAt = w.Tick
-			w.ResolveDamage(world.InvalidID, m.TargetID, w.Mon.AttackDamage, world.ElementNone, world.DamageTags{})
+			// 受击倍率（被动「吸收护盾」×0.8）在这一层乘，不在
+			// ResolveDamage 里乘：那张技能表在 build 包，而 world 不能
+			// import build（build 依赖 world，反向会成环，AGENTS.md §2.4）。
+			// 所以倍率只能在每一个伤害来源侧各自乘，world 里只留与技能表
+			// 无关的判定（无敌）。
+			//
+			// Effective() 兜底零值：池里刚出生的玩家 Derived 全 0，直接乘
+			// 会让怪物打出 0 伤害——一种"看起来正常但什么都没发生"的错。
+			dmg := w.Mon.AttackDamage * target.Derived.Effective().DamageTakenMul
+			w.ResolveDamage(world.InvalidID, m.TargetID, dmg, world.ElementNone, world.DamageTags{})
 		}
 
 	case world.MonsterReturn:

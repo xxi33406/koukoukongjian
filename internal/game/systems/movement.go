@@ -126,7 +126,27 @@ func Integrate(p *world.PlayerState, dt float64, tr *world.Terrain) {
 		return
 	}
 
-	p.Vel = world.V(p.MoveIntent.X*PlayerSpeed, p.MoveIntent.Y*PlayerSpeed)
+	// 速度 = 基准 × 常驻倍率（被动疾行）× 限时倍率（冲刺）。
+	//
+	// 两个倍率来自不同的地方，这是刻意的：
+	// 常驻倍率在 p.Derived.SpeedMul（RecomputeDerived 按已装被动算出来的），
+	// 限时倍率在 p.SpeedBuffMul（CastActive 施放那一刻快照进来的）。
+	//
+	// 为什么不在这一行查 build.SkillByID(SkillIDDash) 拿冲刺倍率：分层上
+	// 可行（build 只依赖标准库，systems 依赖 build 不成环，本包的 skills.go
+	// 已经这么用了），但语义上不对。技能可换（spec L37），玩家在冲刺途中
+	// 卸下冲刺会让一个已经开始的效果中途改值或失效；而且这里每个子步都要
+	// 跑，一次可避免的表遍历不值得。快照方案让 Integrate 的契约保持干净：
+	// 只读 world 数据，不知道技能表的存在。
+	//
+	// Derived 走 Effective()：Pool.Spawn 出来的玩家还没重算过，倍率是零值，
+	// 直接乘会让"刚出生的人不能动"。兜底见 world.PlayerDerived.Effective。
+	speed := PlayerSpeed * p.Derived.Effective().SpeedMul
+	if p.SpeedBuffLeft > 0 && p.SpeedBuffMul > 0 {
+		speed *= p.SpeedBuffMul
+	}
+
+	p.Vel = world.V(p.MoveIntent.X*speed, p.MoveIntent.Y*speed)
 
 	// 子步位移切成等长小段逐段判定。最后一段允许更短，保证总位移精确。
 	dx := p.Vel.X * dt

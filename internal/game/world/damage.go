@@ -73,6 +73,22 @@ func (w *World) ResolveDamage(src, dst EntityID, base float64, el Element, tags 
 		if p.HP <= 0 {
 			return ev
 		}
+		// 无敌拦在这里、拦整个入口，而不是拦在各个伤害来源上。
+		//
+		// 为什么收进 world 而不在 systems 里乘：无敌是"这个目标这一瞬间不吃
+		// 伤害"，它与伤害来源无关——子弹、近战、区域性伤害、反射弹幕都要拦。
+		// 若让每个来源自己判，M6 加新来源时必然漏一处，而症状是"某个技能
+		// 能打穿无敌"，只有设计师才看得出不对。反过来，被动的减伤倍率
+		// （DamageTakenMul）必须留在调用方乘：那张表在 build 包，world 不能
+		// import 它（会成环），而无敌只是一个布尔式判断，纯 world 数据。
+		//
+		// 两条路径：InvulnLeft 是技能给的限时无敌（秒），Flags 里的位是
+		// 复活/出生保护这类由房间逻辑给的状态。两者都拦，判据取或。
+		if p.Flags.Has(PlayerFlagInvulnerable) || p.InvulnLeft > 0 {
+			// 返回零值事件：Amount 保持 0，调用方据此知道"这次没结算"，
+			// 不会下发一条 0 伤害的事件，也不会给来源记贡献。
+			return ev
+		}
 		p.HP -= dmg
 		// 承受伤害参与贡献折算（spec L134：贡献 = 伤害 + 0.5×承受）
 		p.DamageTaken += dmg

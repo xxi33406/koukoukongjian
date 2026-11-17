@@ -94,9 +94,87 @@ type PlayerState struct {
 	Exp       uint32
 	ExpToNext uint32
 
+	// —— 技能效果（M4）——
+	//
+	// 这一组由 systems.RecomputeDerived 整体重算、systems.TickBuffs 递减，
+	// world 包只当数据存着。为什么不在 world 里算：技能表在 build 包，
+	// 而 build 依赖 world——world 再反过来 import build 就成环了（分层纪律
+	// AGENTS.md §2.4：world 是叶子包）。
+	Derived PlayerDerived
+
+	// SpeedBuffLeft / InvulnLeft 是限时效果**剩余秒数**，不是到期 tick 号。
+	//
+	// 走到这两个字段的地方是 Integrate 与 ResolveDamage，而它们的签名里
+	// 根本没有 *World，读不到 w.Tick。为了比一个 tick 号而给物理函数多塞
+	// 一个 World 参数，等于把它和整个世界绑死；而秒数方案只要 tick 层每 tick
+	// 减一次（systems.TickBuffs），物理函数就永远只判 `> 0`。
+	//
+	// 顺带换来可测性：给一个 PlayerState 塞 1.5 秒就能验证"无敌挡伤害"，
+	// 不必构造 World、不必对齐 tick 号。
+	SpeedBuffLeft float64
+	InvulnLeft    float64
+
+	// SkillCooldown 是两个主动槽各自的剩余冷却（秒），下标与 SkillActive 对齐。
+	//
+	// 用定长 [2] 而不是切片：槽位数是设计常量（spec L37 两主动两被动），
+	// 切片会让"某个玩家的槽位被扩成 3 个"变成运行期可能，而 FireCooldown
+	// 那种单值冷却又不够用。
+	SkillCooldown [2]float64
+
+	// SpeedBuffMul 是限时加速的倍率（冲刺），只在 SpeedBuffLeft > 0 时生效。
+	//
+	// 倍率在**施放时快照**进玩家状态，而不是让 Integrate 每子步去查
+	// build.SkillByID(SkillIDDash)：技能可换（spec L37），若玩家在冲刺途中
+	// 卸下冲刺，边查边算会让一个已经开始的效果中途失效或改值。施放那一刻
+	// 取到的倍率该陪着这次效果走完。
+	SpeedBuffMul float64
+
 	// —— 网络校正 ——
 	LastAckedInput uint16
 	Ping           uint32 // 平滑后的 RTT，毫秒
+}
+
+// PlayerDerived 是技能与等级带来的派生倍率，由 systems.RecomputeDerived
+// 整体重算。
+//
+// 做成"重算"而不是"增量改"：技能可换（spec L37），增量改会在反复装卸后
+// 漂移——装上 +25、卸下 -25、再装上 +25，只要中间有任何一条路径漏了减，
+// 血上限就永久跑偏。整体重算的输入只有"已装的被动"与"等级"，天然幂等，
+// 调 1 次和调 100 次结果一样（TestPassivesIdempotent）。
+//
+// 零值不是合法状态：全 0 会让移动速度变 0、伤害变 0。所以读取方一律通过
+// Effective 取，它把"没被重算过"的零倍率兜底成中性值 1。
+type PlayerDerived struct {
+	DamageMul      float64 // 造成伤害的倍率（中性 1）
+	SpeedMul       float64 // 移动速度的倍率（中性 1）
+	DamageTakenMul float64 // 受到伤害的倍率（中性 1）
+	MaxHPBonus     float64 // 最大生命的加法加成（中性 0）
+}
+
+// Effective 返回把零值倍率兜底成中性值之后的副本。
+//
+// 为什么需要兜底：Pool.Spawn 用 `var zero T` 清零整个槽位（pool.go:76），
+// 刚出生的玩家 Derived 是全 0。若 Integrate 直接乘 0，玩家原地不动；若
+// spawnBullet 直接乘 0，子弹零伤害——两者都是"看起来跑通了但什么都没发生"，
+// 而根因离症状很远。兜底让"还没重算"退化成"无技能"，是唯一安全的默认。
+//
+// 代价要说清：漏调 RecomputeDerived 不会崩、不会报错，只会静默按无技能跑。
+// 这个代价换来的是不必在出生路径上强加一次重算调用（出生在 room 的
+// handleJoin，本任务不碰 room 包）。重算漏调的另外半边症状是 MaxHP 不对，
+// 那个症状是可观测的，不会长期藏着。
+//
+// MaxHPBonus 的零值恰好就是中性值 0，不需要兜底。
+func (d PlayerDerived) Effective() PlayerDerived {
+	if d.DamageMul <= 0 {
+		d.DamageMul = 1
+	}
+	if d.SpeedMul <= 0 {
+		d.SpeedMul = 1
+	}
+	if d.DamageTakenMul <= 0 {
+		d.DamageTakenMul = 1
+	}
+	return d
 }
 
 // PlayerStateKind 是玩家的粗粒度状态。

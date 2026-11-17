@@ -114,7 +114,17 @@ func spawnBullet(w *world.World, owner world.EntityID, p *world.PlayerState, wep
 	b.Vel = world.V(dir.X*wep.BulletSpeed, dir.Y*wep.BulletSpeed)
 	b.Radius = wep.BulletRad
 	b.Life = float32(wep.BulletLife) // Weapon.BulletLife 是 float64，BulletState.Life 是 float32
-	b.Damage = wep.Damage
+	// 被动「强化弹头」在这一行生效：子弹把开火那一刻的伤害倍率**快照**进去，
+	// 之后无论玩家怎么换技能，这颗已经在飞的子弹都按原来的伤害结算。
+	//
+	// 为什么是子弹快照而不是在 ApplyHits 里乘来源的当前倍率：技能可换
+	// （spec L37），同一颗子弹从出膛到命中之间玩家可能换掉被动，若在命中
+	// 时才取倍率，一颗"装强化弹头时打出"的子弹会在飞行途中掉伤害。这与
+	// 冲刺用 SpeedBuffMul 快照是同一条原则：已生效的效果按施放时的数值走完。
+	//
+	// Derived 走 Effective()：还没重算过的玩家倍率是零值，直接乘会让子弹
+	// 零伤害，而且完全不报错（见 world.PlayerDerived.Effective）。
+	b.Damage = wep.Damage * p.Derived.Effective().DamageMul
 	b.OwnerID = owner
 	b.Element = wep.Element
 	b.Pierce = 0
