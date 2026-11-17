@@ -41,7 +41,13 @@ type DamageEvent struct {
 //
 // 第 6 步只标记不回收是关键：Collide 与 ApplyHits 都在遍历池，此时 Kill
 // 会改动槽位状态，导致漏遍历或重复遍历。回收统一留给 systems.Reap。
-func (w *World) ResolveDamage(src, dst EntityID, base float64, el Element, tags DamageTags) DamageEvent {
+//
+// dstClass 是目标的池类别，必须由调用方给出。不能靠「先查怪物池再查玩家池」
+// 猜：两个池的 id 各自从索引 1 起编号，撞号是常态而非例外，猜错的后果是
+// 伤害落到另一个池里撞号的那个实体身上，且**没有任何报错**——怪物打玩家
+// 时玩家不掉血、怪物掉血，这个症状曾被当成"怪物 AI 没生效"排查了很久。
+// src 永远是玩家 id（怪物伤害的来源传 InvalidID），所以它不需要类别。
+func (w *World) ResolveDamage(src, dst EntityID, dstClass EntityClass, base float64, el Element, tags DamageTags) DamageEvent {
 	ev := DamageEvent{Src: src, Dst: dst, Element: el}
 
 	if base <= 0 {
@@ -51,6 +57,10 @@ func (w *World) ResolveDamage(src, dst EntityID, base float64, el Element, tags 
 	// 目标必须是存活的怪物或玩家。玩家打玩家在 M2 不存在，但入口写成
 	// 通用形式，M6 的反射弹幕会用到。
 	dmg := base
+
+	if dstClass == EntityClassPlayer {
+		return w.resolvePlayerDamage(ev, src, dst, dmg)
+	}
 
 	if m := w.Monsters.Get(dst); m != nil {
 		if m.IsDead() {
@@ -69,43 +79,65 @@ func (w *World) ResolveDamage(src, dst EntityID, base float64, el Element, tags 
 			ev.IsKill = true
 		}
 		ev.Amount = dmg
-	} else if p := w.Players.Get(dst); p != nil {
-		if p.HP <= 0 {
-			return ev
-		}
-		// 无敌拦在这里、拦整个入口，而不是拦在各个伤害来源上。
-		//
-		// 为什么收进 world 而不在 systems 里乘：无敌是"这个目标这一瞬间不吃
-		// 伤害"，它与伤害来源无关——子弹、近战、区域性伤害、反射弹幕都要拦。
-		// 若让每个来源自己判，M6 加新来源时必然漏一处，而症状是"某个技能
-		// 能打穿无敌"，只有设计师才看得出不对。反过来，被动的减伤倍率
-		// （DamageTakenMul）必须留在调用方乘：那张表在 build 包，world 不能
-		// import 它（会成环），而无敌只是一个布尔式判断，纯 world 数据。
-		//
-		// 两条路径：InvulnLeft 是技能给的限时无敌（秒），Flags 里的位是
-		// 复活/出生保护这类由房间逻辑给的状态。两者都拦，判据取或。
-		if p.Flags.Has(PlayerFlagInvulnerable) || p.InvulnLeft > 0 {
-			// 返回零值事件：Amount 保持 0，调用方据此知道"这次没结算"，
-			// 不会下发一条 0 伤害的事件，也不会给来源记贡献。
-			return ev
-		}
-		p.HP -= dmg
-		// 承受伤害参与贡献折算（spec L134：贡献 = 伤害 + 0.5×承受）
-		p.DamageTaken += dmg
-		if p.HP <= 0 {
-			p.HP = 0
-			ev.IsKill = true
-		}
-		ev.Amount = dmg
 	} else {
+		// 怪物池里没有这个索引：id 失效（槽位已回收、世代对不上）。
+		// 不返回伤害事件，调用方据此知道"这次没结算"。
 		return ev
 	}
 
-	// 贡献记在伤害来源头上。分账只在据点结束时算一次（spec L134），
-	// 这里只累加。
+	creditSource(w, src, dmg)
+	return ev
+}
+
+// resolvePlayerDamage 结算打向玩家的伤害。
+//
+// 单独成函数是因为玩家的结算比怪物多一步无敌判定，把两支塞进同一个
+// if-else 链会让主体淹没在注释里。调用方已经声明了目标类别，这里不再猜池。
+func (w *World) resolvePlayerDamage(ev DamageEvent, src, dst EntityID, dmg float64) DamageEvent {
+	p := w.Players.Get(dst)
+	if p == nil {
+		return ev // 玩家池里没有这个索引：id 失效
+	}
+	if p.HP <= 0 {
+		return ev
+	}
+
+	// 无敌拦在这里、拦整个入口，而不是拦在各个伤害来源上。
+	//
+	// 为什么收进 world 而不在 systems 里乘：无敌是"这个目标这一瞬间不吃
+	// 伤害"，它与伤害来源无关——子弹、近战、区域性伤害、反射弹幕都要拦。
+	// 若让每个来源自己判，M6 加新来源时必然漏一处，而症状是"某个技能
+	// 能打穿无敌"，只有设计师才看得出不对。反过来，被动的减伤倍率
+	// （DamageTakenMul）必须留在调用方乘：那张表在 build 包，world 不能
+	// import 它（会成环），而无敌只是一个布尔式判断，纯 world 数据。
+	//
+	// 两条路径：InvulnLeft 是技能给的限时无敌（秒），Flags 里的位是
+	// 复活/出生保护这类由房间逻辑给的状态。两者都拦，判据取或。
+	if p.Flags.Has(PlayerFlagInvulnerable) || p.InvulnLeft > 0 {
+		// 返回零值事件：Amount 保持 0，调用方据此知道"这次没结算"，
+		// 不会下发一条 0 伤害的事件，也不会给来源记贡献。
+		return ev
+	}
+
+	p.HP -= dmg
+	// 承受伤害参与贡献折算（spec L134：贡献 = 伤害 + 0.5×承受）
+	p.DamageTaken += dmg
+	if p.HP <= 0 {
+		p.HP = 0
+		ev.IsKill = true
+	}
+	ev.Amount = dmg
+
+	creditSource(w, src, dmg)
+	return ev
+}
+
+// creditSource 把这次伤害记到来源玩家的贡献上。
+//
+// 分账只在据点结束时算一次（spec L134），这里只累加。源头必须查玩家池：
+// 怪物伤害的来源传 InvalidID，查不到就什么都不记（怪物没有贡献概念）。
+func creditSource(w *World, src EntityID, dmg float64) {
 	if srcP := w.Players.Get(src); srcP != nil {
 		srcP.Contribute += dmg
 	}
-
-	return ev
 }

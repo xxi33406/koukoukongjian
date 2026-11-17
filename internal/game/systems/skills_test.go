@@ -361,7 +361,7 @@ func TestInvulnBlocksDamage(t *testing.T) {
 
 	// 8 号主动设置的是秒数；ResolveDamage 只判 > 0。
 	p.InvulnLeft = 1.0
-	ev := w.ResolveDamage(world.InvalidID, pid, 10, world.ElementNone, world.DamageTags{})
+	ev := w.ResolveDamage(world.InvalidID, pid, world.EntityClassPlayer, 10, world.ElementNone, world.DamageTags{})
 	if ev.Amount != 0 {
 		t.Fatalf("无敌期间事件量 = %v，期望 0（不该产出伤害事件）", ev.Amount)
 	}
@@ -372,13 +372,13 @@ func TestInvulnBlocksDamage(t *testing.T) {
 	// 常驻旗标那一条路径同样必须拦住。
 	p.InvulnLeft = 0
 	p.Flags |= world.PlayerFlagInvulnerable
-	if ev := w.ResolveDamage(world.InvalidID, pid, 10, world.ElementNone, world.DamageTags{}); ev.Amount != 0 {
+	if ev := w.ResolveDamage(world.InvalidID, pid, world.EntityClassPlayer, 10, world.ElementNone, world.DamageTags{}); ev.Amount != 0 {
 		t.Fatalf("旗标无敌期间事件量 = %v，期望 0", ev.Amount)
 	}
 
 	// 无敌结束后恢复吃伤害——否则「拦住了」与「压根没结算」分不开。
 	p.Flags &^= world.PlayerFlagInvulnerable
-	if ev := w.ResolveDamage(world.InvalidID, pid, 10, world.ElementNone, world.DamageTags{}); ev.Amount != 10 {
+	if ev := w.ResolveDamage(world.InvalidID, pid, world.EntityClassPlayer, 10, world.ElementNone, world.DamageTags{}); ev.Amount != 10 {
 		t.Fatalf("无敌结束后事件量 = %v，期望 10", ev.Amount)
 	}
 	if p.HP != 90 {

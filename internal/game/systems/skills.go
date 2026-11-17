@@ -157,7 +157,8 @@ func castBurst(w *world.World, id world.EntityID, p *world.PlayerState, s build.
 		return true
 	})
 	for _, mid := range hit {
-		w.ResolveDamage(id, mid, s.Amount, world.ElementNone, world.DamageTags{})
+		// 环形爆发只伤怪物（hit 里收的都是怪物池 id），类别显式写出来。
+		w.ResolveDamage(id, mid, world.EntityClassMonster, s.Amount, world.ElementNone, world.DamageTags{})
 	}
 }
 

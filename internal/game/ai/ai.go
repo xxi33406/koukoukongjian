@@ -142,7 +142,10 @@ func UpdateMonster(w *world.World, m *world.MonsterState, dt float64) {
 			// Effective() 兜底零值：池里刚出生的玩家 Derived 全 0，直接乘
 			// 会让怪物打出 0 伤害——一种"看起来正常但什么都没发生"的错。
 			dmg := w.Mon.AttackDamage * target.Derived.Effective().DamageTakenMul
-			w.ResolveDamage(world.InvalidID, m.TargetID, dmg, world.ElementNone, world.DamageTags{})
+			// 目标类别显式传 EntityClassPlayer：TargetID 来自仇恨锁定，
+			// 记的是玩家 id。不显式传会让 ResolveDamage 去怪物池里找这个
+			// 索引——两个池都是从 1 开始编号，撞号的怪会替玩家挨这一下。
+			w.ResolveDamage(world.InvalidID, m.TargetID, world.EntityClassPlayer, dmg, world.ElementNone, world.DamageTags{})
 		}
 
 	case world.MonsterReturn:

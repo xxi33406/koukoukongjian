@@ -41,6 +41,27 @@ func (e EntityID) Gen() uint8 { return uint8(e >> GenShift) }
 // IsValid 报告这个 ID 是否指向一个可能的实体。
 func (e EntityID) IsValid() bool { return e != InvalidID }
 
+// EntityClass 说明一个 EntityID 属于哪个实体池。
+//
+// 为什么必须有它：EntityID 只编码「世代 + 索引」，两个池各自从索引 1 开始
+// 编号，所以 w.Players.Spawn() 与 w.Monsters.Spawn() 会给出**同一个数值**
+// （都是 index=1, gen=0）。也就是说光有一个 EntityID 无法判断它指向玩家
+// 还是怪物——这不是理论风险：ResolveDamage 曾按「先查怪物池、再查玩家池」
+// 的顺序猜目标类型，怪物打玩家的伤害因此落到撞号的那只怪物身上，玩家血条
+// 纹丝不动（探针实测：怪 50→40、玩家 100→100）。
+//
+// 因此凡是「按 id 去某个池取实体」的地方，调用方必须同时给出池的类别，
+// 不能靠「先查哪个池」的顺序猜。零值刻意留给了怪物池：子弹命中怪物是唯一
+// 不显式写这个字段的热路径，让零值等于既有语义，可以少改一处热循环。
+type EntityClass uint8
+
+const (
+	// EntityClassMonster 表示 id 属于怪物池。
+	EntityClassMonster EntityClass = iota
+	// EntityClassPlayer 表示 id 属于玩家池。
+	EntityClassPlayer
+)
+
 // String 便于日志里直接打印。
 func (e EntityID) String() string {
 	if e == InvalidID {
