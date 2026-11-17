@@ -27,7 +27,9 @@ type Config struct {
 	Fog     Fog     `toml:"fog"`
 	Waves   Waves   `toml:"waves"`
 	Monster Monster `toml:"monster"`
-	Log     Log     `toml:"log"`
+	// Progression 是升级曲线参数（M4）。字段名与 TOML 键一一对应。
+	Progression Progression `toml:"progression"`
+	Log         Log         `toml:"log"`
 }
 
 // Server 是进程级参数。
@@ -111,6 +113,21 @@ type Monster struct {
 	SightRange      float64 `toml:"sight_range"`       // 感知半径（米），且要求视线（Bresenham）可通
 }
 
+// Progression 是升级曲线参数（M4）。
+//
+// 曲线是几何级数：1 级升 2 级需要 ExpBase 点经验，之后每级乘 ExpGrowth。
+// 设计依据 spec L105：第一关第一个据点就能升一级，之后频率递减——递减
+// 由 ExpGrowth>1 自然产生，不需要额外的分段表。分段表的代价是每一段都要
+// 有人拍数值、且段与段的接缝处容易调出断崖；几何级数只有一个旋钮，
+// 灰盒阶段改一个数就能整体调快调慢。
+type Progression struct {
+	ExpBase            float64 `toml:"exp_base"`              // 1 级升 2 级所需经验
+	ExpGrowth          float64 `toml:"exp_growth"`            // 每级乘数（>1 递减）
+	MaxLevel           int     `toml:"max_level"`             // 等级上限
+	SkillChoiceWindowS float64 `toml:"skill_choice_window_s"` // 三选一决策窗口（秒）
+	KillExp            uint32  `toml:"kill_exp"`              // 击杀一只怪的基础经验
+}
+
 // Log 是日志参数。
 type Log struct {
 	Level  string `toml:"level"`  // debug / info / warn / error
@@ -174,6 +191,17 @@ func Default() *Config {
 			FastChaseDist:   15.0,
 			FastChaseMul:    1.5,
 			SightRange:      20.0,
+		},
+		// ExpBase=20 配 KillExp=8：一个据点 3 波 × 4 怪 = 12 只，合计 96 点，
+		// 首级只需 20 点——第一个据点清到一半就能升一级，符合 spec L105
+		// 「第一关第一个据点就能升一级」。ExpGrowth=1.35 让第 5 级要 ~67 点、
+		// 第 10 级要 ~300 点，升级自然变慢而不需要分段表。
+		Progression: Progression{
+			ExpBase:            20,
+			ExpGrowth:          1.35,
+			MaxLevel:           20,
+			SkillChoiceWindowS: 5,
+			KillExp:            8,
 		},
 		Log: Log{
 			Level:  "info",
@@ -308,6 +336,9 @@ func (c *Config) Validate() error {
 	addNaN("monster.attack_cooldown_s", c.Monster.AttackCooldownS)
 	addNaN("monster.fast_chase_mul", c.Monster.FastChaseMul)
 	addNaN("monster.sight_range", c.Monster.SightRange)
+	addNaN("progression.exp_base", c.Progression.ExpBase)
+	addNaN("progression.exp_growth", c.Progression.ExpGrowth)
+	addNaN("progression.skill_choice_window_s", c.Progression.SkillChoiceWindowS)
 
 	if c.Fog.RevealRadius < 1 || c.Fog.RevealRadius > 64 {
 		add("fog.reveal_radius = %v，必须在 1..64", c.Fog.RevealRadius)
@@ -338,6 +369,30 @@ func (c *Config) Validate() error {
 	}
 	if c.Monster.SightRange < 1 || c.Monster.SightRange > 128 {
 		add("monster.sight_range = %v，必须在 1..128", c.Monster.SightRange)
+	}
+
+	// —— 升级曲线（M4）——
+	//
+	// MaxLevel 上限 99 而不是 255：Level 字段是 uint8，255 才是类型上限，
+	// 但本项目的等级是"一局内的成长"（单关 5~8 据点、20 级封顶），99 已经
+	// 远超设计，把校验卡在这里是为了让"手滑多打一个 0"变成启动错误而不是
+	// 一局打到 255 才发现曲线早在第 30 级就溢出了。
+	if c.Progression.ExpBase <= 0 {
+		add("progression.exp_base = %v，必须为正", c.Progression.ExpBase)
+	}
+	if c.Progression.ExpGrowth < 1 {
+		add("progression.exp_growth = %v，必须 ≥1（<1 会让升级越来越快）", c.Progression.ExpGrowth)
+	}
+	if c.Progression.MaxLevel < 1 || c.Progression.MaxLevel > 99 {
+		add("progression.max_level = %d，必须在 1..99（Level 字段是 uint8，设计上限 20）",
+			c.Progression.MaxLevel)
+	}
+	if c.Progression.SkillChoiceWindowS <= 0 {
+		add("progression.skill_choice_window_s = %v，必须为正（窗口为 0 等于不给人选）",
+			c.Progression.SkillChoiceWindowS)
+	}
+	if c.Progression.KillExp == 0 {
+		add("progression.kill_exp = 0，必须为正（否则击杀永远不给经验）")
 	}
 
 	switch c.Log.Level {

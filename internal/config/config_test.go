@@ -280,6 +280,114 @@ func TestValidateAcceptsHubCountZeroSentinel(t *testing.T) {
 	}
 }
 
+// M4 升级曲线默认值。ExpBase=20 的依据是 spec L105「第一关第一个据点就能
+// 升一级」：一个据点 3 波 × 4 怪 = 12 只，KillExp=8 合计 96 点，远超首级
+// 所需 20 点——曲线起点必须很低，否则第一条"升一级"的正反馈会被推迟。
+func TestDefaultProgression(t *testing.T) {
+	c := Default()
+	if c.Progression.ExpBase != 20 {
+		t.Errorf("ExpBase = %v, 期望 20", c.Progression.ExpBase)
+	}
+	if c.Progression.ExpGrowth != 1.35 {
+		t.Errorf("ExpGrowth = %v, 期望 1.35", c.Progression.ExpGrowth)
+	}
+	if c.Progression.MaxLevel != 20 {
+		t.Errorf("MaxLevel = %d, 期望 20", c.Progression.MaxLevel)
+	}
+	if c.Progression.SkillChoiceWindowS != 5 {
+		t.Errorf("SkillChoiceWindowS = %v, 期望 5", c.Progression.SkillChoiceWindowS)
+	}
+	if c.Progression.KillExp != 8 {
+		t.Errorf("KillExp = %d, 期望 8", c.Progression.KillExp)
+	}
+}
+
+// 每个非法字段单独一条负例：一条用例同时改多个字段，就分不清是哪条校验
+// 生效了（某条校验被删掉，别的字段仍让整体报错，测试照样绿）。
+func TestValidateRejectsBadProgression(t *testing.T) {
+	cases := []struct {
+		name string
+		mut  func(*Config)
+		want string
+	}{
+		{"ExpBase 为 0", func(c *Config) { c.Progression.ExpBase = 0 }, "progression.exp_base"},
+		{"ExpBase 为负", func(c *Config) { c.Progression.ExpBase = -1 }, "progression.exp_base"},
+		{"ExpBase 为 NaN", func(c *Config) { c.Progression.ExpBase = math.NaN() }, "progression.exp_base"},
+		// ExpGrowth=1 合法（线性），<1 意味着越升越快，与"升级频率递减"的设计目标相反。
+		{"ExpGrowth 小于 1", func(c *Config) { c.Progression.ExpGrowth = 0.9 }, "progression.exp_growth"},
+		{"ExpGrowth 为 NaN", func(c *Config) { c.Progression.ExpGrowth = math.NaN() }, "progression.exp_growth"},
+		{"MaxLevel 为 0", func(c *Config) { c.Progression.MaxLevel = 0 }, "progression.max_level"},
+		// Level 字段是 uint8（上限 255）；设计上 20 级封顶，99 是"明显过大"的护栏。
+		{"MaxLevel 超上限", func(c *Config) { c.Progression.MaxLevel = 100 }, "progression.max_level"},
+		{"SkillChoiceWindowS 为 0", func(c *Config) { c.Progression.SkillChoiceWindowS = 0 }, "progression.skill_choice_window_s"},
+		{"SkillChoiceWindowS 为 NaN", func(c *Config) { c.Progression.SkillChoiceWindowS = math.NaN() }, "progression.skill_choice_window_s"},
+		{"KillExp 为 0", func(c *Config) { c.Progression.KillExp = 0 }, "progression.kill_exp"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := Default()
+			tc.mut(cfg)
+			err := cfg.Validate()
+			if err == nil {
+				t.Fatalf("%s 应被拒绝，Validate 却返回 nil", tc.name)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("错误信息应提到 %q，实际：%v", tc.want, err)
+			}
+		})
+	}
+}
+
+// 边界正向：ExpGrowth 恰好等于 1 是合法的线性曲线，MaxLevel=1 与 99 是
+// 区间两端。没有这些正向断言，将来有人把比较写成 < / > 写反方向（把闭
+// 区间改成开源区间）时不会有任何测试变红。
+func TestValidateAcceptsProgressionBoundaries(t *testing.T) {
+	cfg := Default()
+	cfg.Progression.ExpGrowth = 1
+	cfg.Progression.MaxLevel = 1
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("ExpGrowth=1 / MaxLevel=1 应通过，却报错：%v", err)
+	}
+	cfg.Progression.MaxLevel = 99
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("MaxLevel=99 应在 1..99 内，却报错：%v", err)
+	}
+}
+
+// TOML 的 progression 段必须能被读到。与 TestLoadOverridesDefaults 同一手法。
+func TestLoadProgressionFromTOML(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "p.toml")
+	body := "[progression]\n" +
+		"exp_base = 35.5\n" +
+		"exp_growth = 1.5\n" +
+		"max_level = 12\n" +
+		"skill_choice_window_s = 3.5\n" +
+		"kill_exp = 11\n"
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, loaded, err := Load(path)
+	if err != nil {
+		t.Fatalf("加载失败：%v", err)
+	}
+	if loaded != path {
+		t.Fatalf("loaded = %q，期望 %q", loaded, path)
+	}
+	p := cfg.Progression
+	// 期望值写成常量字面量，而不是再算一遍 TOML 里的数：重新算一遍等于把
+	// 同一个错误写两遍，读成什么都会"一致"。
+	if p.ExpBase != 35.5 || p.ExpGrowth != 1.5 || p.MaxLevel != 12 ||
+		p.SkillChoiceWindowS != 3.5 || p.KillExp != 11 {
+		t.Fatalf("Progression = %+v, 期望 {ExpBase:35.5 ExpGrowth:1.5 MaxLevel:12 WindowS:3.5 KillExp:11}", p)
+	}
+	// 未提及的其他组必须保持默认，不能被 DecodeFile 清成零值。
+	if cfg.Server.TickRate != 20 || cfg.Monster.HP != 50 {
+		t.Fatalf("其他组被清空了：tick_rate=%d monster.hp=%v", cfg.Server.TickRate, cfg.Monster.HP)
+	}
+}
+
 func abs(x float64) float64 {
 	if x < 0 {
 		return -x

@@ -136,6 +136,20 @@ func (r *Room) handleJoin(req JoinRequest) {
 	// 而且日志里没有任何异常。
 	p.WeaponID = systems.DefaultWeaponID
 
+	// 出生即 1 级。Pool.Spawn 会 `var zero T` 把整个槽位清零（pool.go 的
+	// 契约：复用槽位不能残留上一轮的字段），所以这里 Spawn 出来的 Level
+	// 是 0，必须在这里显式补 1——不能指望池给默认值，池是通用容器，
+	// 子弹池和拾取物池都靠"零值即干净"。
+	//
+	// ExpToNext 取曲线的首级值而不是写死 20：ExpBase 是调参旋钮，把 20
+	// 硬编码进来的话，有人把 exp_base 改成 35 之后曲线算出的第 2 级门槛
+	// 是 47，而 1 级门槛还停在 20——第一级莫名变便宜，且没有任何地方报错。
+	// uint32 转换是安全的：Validate 已保证 ExpBase>0 且为有限数（NaN/Inf
+	// 在 addNaN 防线里被拦），cmd/server 启动时就跑过 Validate。
+	p.Level = 1
+	p.Exp = 0
+	p.ExpToNext = uint32(r.cfg.Progression.ExpBase)
+
 	pp := &peer{
 		slot:    slot,
 		id:      id,

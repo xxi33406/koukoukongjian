@@ -78,6 +78,22 @@ type PlayerState struct {
 	Flags       PlayerFlags
 	GhostTether float32 // 鬼魂拴绳半径（spec L66）
 
+	// —— 成长（M4）——
+	//
+	// Level 从 1 起。但要注意 Pool.Spawn 会 `var zero T` 把整个槽位清零
+	// （pool.go），所以刚 Spawn 出来是 0——出生值必须由调用方显式补成 1，
+	// 位置在 internal/room/net.go 的 handleJoin，与 p.WeaponID 同一处。
+	// 池保持通用容器（子弹池/拾取物池都靠"零值即干净"），不为玩家单开
+	// 一个出生钩子。
+	//
+	// ExpToNext 是升到下一级还需要的经验，由曲线算出后缓存在这里：曲线上
+	// 每级只与当前等级有关，而加经验要拿它反复比较，几何级数每算一次都要
+	// pow。缓存同时也让"当前等级要多少经验"成为一个可直接读、调试时看得
+	// 见的字段，不必反推。
+	Level     uint8
+	Exp       uint32
+	ExpToNext uint32
+
 	// —— 网络校正 ——
 	LastAckedInput uint16
 	Ping           uint32 // 平滑后的 RTT，毫秒
