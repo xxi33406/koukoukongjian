@@ -39,8 +39,9 @@ func Collide(w *world.World) []Hit {
 		var bestSq float64
 
 		w.Monsters.Each(func(mID world.EntityID, m *world.MonsterState) bool {
-			// HP<=0 即已死（§1.3）。已死的怪不再吃伤害。
-			if m.HP <= 0 {
+			// 已死的怪不再吃伤害。判据是显式标志而不是 HP<=0：M4 起
+			// 治疗能把 HP 拉回正数，见 world.MonsterFlagDead。
+			if m.IsDead() {
 				return true
 			}
 			r := float64(m.Radius) + float64(b.Radius)

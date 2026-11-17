@@ -24,9 +24,10 @@ func Reap(w *world.World) []world.DamageEvent {
 
 	var dead []world.EntityID
 	w.Monsters.Each(func(id world.EntityID, m *world.MonsterState) bool {
-		// HP<=0 是 M2 的死亡判据（§1.3）。M4 加入治疗/吸血后必须改成
-		// 显式 MonsterFlagDead，否则被救回来的怪会在这里被误删。
-		if m.HP <= 0 {
+		// 判据是显式 MonsterFlagDead。M2 这里用的是 HP<=0，那时的前提是
+		// HP 只减不增；M4 的治疗/吸血会把 HP 拉回正数，再用 HP 判就会把
+		// 被救回来的怪顺手删掉。挂账已在此兑付。
+		if m.IsDead() {
 			dead = append(dead, id)
 		}
 		return true

@@ -65,7 +65,9 @@ func TestCollideUsesSweepNotPoint(t *testing.T) {
 func TestCollideSkipsDeadMonster(t *testing.T) {
 	w := newSystemsWorld(t, 3)
 	mID := spawnMonsterAt(t, w, 0.5, 0)
-	w.Monsters.Get(mID).HP = 0
+	dead := w.Monsters.Get(mID)
+	dead.HP = 0
+	dead.Flags |= world.MonsterFlagDead
 	_, b := w.Bullets.Spawn()
 	b.PrevPos = world.V(0, 0)
 	b.Pos = world.V(1, 0)
@@ -73,6 +75,24 @@ func TestCollideSkipsDeadMonster(t *testing.T) {
 
 	if hits := Collide(w); len(hits) != 0 {
 		t.Fatalf("命中了已死的怪：%d 条", len(hits))
+	}
+}
+
+// TestCollideSkipsHealedCorpse 钉住"判据是标志而不是 HP"：治疗把尸体
+// HP 拉回正数后，子弹仍不该命中它（否则击杀事件重复产出、分账算两次）。
+func TestCollideSkipsHealedCorpse(t *testing.T) {
+	w := newSystemsWorld(t, 3)
+	mID := spawnMonsterAt(t, w, 0.5, 0)
+	corpse := w.Monsters.Get(mID)
+	corpse.Flags |= world.MonsterFlagDead
+	corpse.HP = 50 // 治疗拉满，标志不动
+	_, b := w.Bullets.Spawn()
+	b.PrevPos = world.V(0, 0)
+	b.Pos = world.V(1, 0)
+	b.Radius = 0.1
+
+	if hits := Collide(w); len(hits) != 0 {
+		t.Fatalf("命中了 HP=50 但标志为死的实体：%d 条", len(hits))
 	}
 }
 

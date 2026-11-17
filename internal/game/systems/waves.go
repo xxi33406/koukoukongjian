@@ -95,13 +95,15 @@ func startWave(w *world.World, hub *world.Hub) {
 
 // waveAlive 数当前波还活着的怪（只查 WaveIDs，不全池扫）。
 //
-// 判活口径是 HP>0 而不是池槽位（Pool.Alive）：击杀在 Reap 接线（Task 9/10）
-// 前不回收槽位、接上后 Kill 才清槽，HP 口径两种路径都正确——HP=0 即算死，
-// 与 reap 系统的回收判定一致。
+// 判活口径是 world.MonsterState.IsDead 的取反，而不是池槽位（Pool.Alive）：
+// 击杀在 Reap 接线（Task 9/10）前不回收槽位、接上后 Kill 才清槽，标志口径
+// 两种路径都正确。与 reap 系统的回收判定必须同源——两处口径一旦分叉，
+// 会出现"Reap 已经删了但波次还等它"或反过来的卡波（M4 Task 1 一并改掉
+// 了原来的 HP>0 口径）。
 func waveAlive(w *world.World, hub *world.Hub) int {
 	n := 0
 	for i := 0; i < hub.WaveN; i++ {
-		if m := w.Monsters.Get(hub.WaveIDs[i]); m != nil && m.HP > 0 {
+		if m := w.Monsters.Get(hub.WaveIDs[i]); m != nil && !m.IsDead() {
 			n++
 		}
 	}

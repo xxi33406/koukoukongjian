@@ -27,8 +27,9 @@ func NearestMonster(w *world.World, from world.Vec2, maxRange float64) (world.En
 	found := false
 
 	w.Monsters.Each(func(id world.EntityID, m *world.MonsterState) bool {
-		// HP<=0 就是死亡标记（见本计划 §1.3）。瞄准一具尸体没有意义。
-		if m.HP <= 0 {
+		// 瞄准一具尸体没有意义。判据是显式标志而不是 HP<=0：M4 起
+		// 治疗能把 HP 拉回正数，见 world.MonsterFlagDead。
+		if m.IsDead() {
 			return true
 		}
 		d := from.Sub(m.Pos).LenSq()

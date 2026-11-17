@@ -77,7 +77,7 @@ func RescoreAggro(w *world.World, m *world.MonsterState) {
 // dt 是子步秒数；计时器按调用次数自增（名义 tick——room 每 tick 调一次，见
 // 汇报偏差清单），攻击冷却与重算节流都挂在 w.AggroRescoreTicks / w.PathRecalcTicks 上。
 func UpdateMonster(w *world.World, m *world.MonsterState, dt float64) {
-	if m.HP <= 0 {
+	if m.IsDead() {
 		return // 尸体不动
 	}
 

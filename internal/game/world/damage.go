@@ -53,7 +53,7 @@ func (w *World) ResolveDamage(src, dst EntityID, base float64, el Element, tags 
 	dmg := base
 
 	if m := w.Monsters.Get(dst); m != nil {
-		if m.HP <= 0 {
+		if m.IsDead() {
 			// 尸体不再吃伤害：否则同 tick 多颗子弹命中会让击杀事件
 			// 重复产出，分账算两次。
 			return ev
@@ -62,6 +62,10 @@ func (w *World) ResolveDamage(src, dst EntityID, base float64, el Element, tags 
 		if m.HP <= 0 {
 			// 钳到 0：允许为负会让客户端血条算出负宽度。
 			m.HP = 0
+			// 死亡只置标志，不动槽位（第 6 步只标记不回收，见函数头）。
+			// 置的是标志而不是靠 HP=0 推断：M4 的治疗能把 HP 拉回来，
+			// 用值推断会让"打死"和"血少"撞在同一个表示上。
+			m.Flags |= MonsterFlagDead
 			ev.IsKill = true
 		}
 		ev.Amount = dmg

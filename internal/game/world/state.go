@@ -166,10 +166,26 @@ const (
 	MonsterFlagEnraged                           // 距离惩罚第二级：狂暴
 	MonsterFlagSplits                            // 距离惩罚第一级：攻击分裂
 	MonsterFlagBuffable                          // 可被掉落的强化效果加强
+
+	// MonsterFlagDead 是 M4 起的唯一死亡判据。
+	//
+	// 为什么判据是标志而不是 HP：M2/M3 用 HP<=0 同时兼做"死亡判据"和
+	// "尸体标记"，那是建立在"HP 只减不增"这个前提上的——前提一旦不成立，
+	// 判据就是错的。M4 的治疗/吸血、M5 的祭坛复活都会把 HP 拉回正数，
+	// 于是 HP<=0 同时意味着"死了"和"活着但血少"，两个语义纠缠在一起；
+	// 更糟的是"能不能复活"会由治疗量顺手决定，而那是设计要单独拍板的事。
+	// 把状态写成显式位，值与状态各走各的路：治疗只管 HP，复活只管清标志。
+	MonsterFlagDead
 )
 
 // Has 报告标记位是否置位。
 func (f MonsterFlags) Has(bit MonsterFlags) bool { return f&bit != 0 }
+
+// IsDead 报告这只怪物是否已死。这是唯一死亡判据。
+//
+// 不要再用 HP<=0 判死（理由见 MonsterFlagDead）。所有"尸体不吃伤害 /
+// 不瞄准 / 不决策 / 待回收"的分支都必须走这里。
+func (m *MonsterState) IsDead() bool { return m.Flags.Has(MonsterFlagDead) }
 
 // BulletState 是一颗子弹的完整状态。
 type BulletState struct {

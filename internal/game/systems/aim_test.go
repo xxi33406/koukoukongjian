@@ -64,7 +64,8 @@ func TestNearestMonsterSkipsDead(t *testing.T) {
 	w := newSystemsWorld(t, 7)
 	dead := spawnMonsterAt(t, w, 2, 0)
 	deadPtr := w.Monsters.Get(dead)
-	deadPtr.HP = 0 // 已被打死的怪不能再被瞄准
+	deadPtr.HP = 0
+	deadPtr.Flags |= world.MonsterFlagDead // 已被打死的怪不能再被瞄准
 	spawnMonsterAt(t, w, 8, 0)
 
 	id, ok := NearestMonster(w, world.V(0, 0), 15)
@@ -126,5 +127,21 @@ func TestResolveAimFallsBackWhenNoTarget(t *testing.T) {
 	got := ResolveAim(w, p, world.V(0, 0), false)
 	if math.Abs(got-2.5) > 1e-9 {
 		t.Fatalf("无目标时朝向变成 %v，期望保持 2.5", got)
+	}
+}
+
+// TestNearestMonsterSkipsHealedCorpse 钉住"判据是标志而不是 HP"：
+// 治疗把尸体 HP 拉回正数后，它仍不该被瞄准（M4 治疗 / M5 祭坛复活的前提）。
+func TestNearestMonsterSkipsHealedCorpse(t *testing.T) {
+	w := newSystemsWorld(t, 7)
+	corpse := spawnMonsterAt(t, w, 2, 0)
+	cp := w.Monsters.Get(corpse)
+	cp.Flags |= world.MonsterFlagDead
+	cp.HP = 50 // 治疗把血拉满，标志不动
+	spawnMonsterAt(t, w, 30, 0)
+
+	id, ok := NearestMonster(w, world.V(0, 0), 15)
+	if ok {
+		t.Fatalf("瞄准了 HP=50 但标志为死的实体 %v；近处活怪在 30 m 外，应返回 ok=false", id)
 	}
 }

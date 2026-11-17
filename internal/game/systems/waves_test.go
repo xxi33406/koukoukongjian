@@ -83,7 +83,8 @@ func TestWaveHoldsBetweenWavesWithoutClockAdvance(t *testing.T) {
 	UpdateWaves(w) // 第 1 波刷出，NextAt 已定
 
 	w.Monsters.Each(func(_ world.EntityID, m *world.MonsterState) bool {
-		m.HP = 0 // 杀光但不推时钟
+		m.HP = 0
+		m.Flags |= world.MonsterFlagDead // 杀光但不推时钟
 		return true
 	})
 	UpdateWaves(w)
@@ -107,7 +108,10 @@ func TestWaveClearAdvancesThenCompletes(t *testing.T) {
 	// 约定（AGENTS §2.7）直接改 w.Tick，不睡真实时间。
 	killWave := func() {
 		w.Monsters.Each(func(_ world.EntityID, m *world.MonsterState) bool {
-			m.HP = 0 // Reap 在 Task 9/10 才接线，直接改字段模拟击杀
+			// Reap 在 Task 9/10 才接线，直接改字段模拟击杀：
+			// M4 起死亡态是 HP 归零 + MonsterFlagDead 置位。
+			m.HP = 0
+			m.Flags |= world.MonsterFlagDead
 			return true
 		})
 	}
@@ -145,6 +149,31 @@ func TestWaveClearAdvancesThenCompletes(t *testing.T) {
 	}
 }
 
+// TestWaveAliveIgnoresHealedButDeadMonster 钉住清波口径与 Reap 同源（M4
+// Task 1）：治疗把 HP 拉回正数、标志仍在的怪不能算活着，否则波次永远不
+// 结束（面板上血是满的，逻辑上却是尸体）。
+func TestWaveAliveIgnoresHealedButDeadMonster(t *testing.T) {
+	w, _ := newWaveWorld(t)
+	playerAtHub(t, w, 1)
+	hub := &w.Hubs[1]
+	UpdateWaves(w) // 第 1 波刷出
+
+	w.Monsters.Each(func(_ world.EntityID, m *world.MonsterState) bool {
+		m.HP = 50                        // 治疗回满血
+		m.Flags |= world.MonsterFlagDead // 但标志还在：是尸体
+		return true
+	})
+	if n := waveAlive(w, hub); n != 0 {
+		t.Fatalf("waveAlive = %d，期望 0：HP 回满但标志为死的怪不该算活着", n)
+	}
+
+	w.Tick = hub.NextAt
+	UpdateWaves(w)
+	if hub.Wave != 2 {
+		t.Errorf("清波后应推进到第 2 波，实际 hub.Wave=%d", hub.Wave)
+	}
+}
+
 func TestWaveOnlyTriggersInsideRadius(t *testing.T) {
 	w, cfg := newWaveWorld(t)
 	// 玩家站在据点外：3 号据点右侧 2 倍半径处（10 m > 5 m 触发半径），
@@ -178,14 +207,15 @@ func TestWaveIDsTrackedForKillDetection(t *testing.T) {
 		t.Errorf("WaveN=%d，期望 %d", hub.WaveN, cfg.Waves.MonstersPerWave)
 	}
 	for i := 0; i < hub.WaveN; i++ {
-		// 清波检测的口径是 HP>0（waveAlive 同款）：槽位要活着、血量要为正。
+		// 清波检测的口径与 waveAlive 同源（M4 起是 IsDead 的取反）：
+		// 刷出的怪既不能带死亡标志，血量也必须为正。
 		m := w.Monsters.Get(hub.WaveIDs[i])
 		if m == nil {
 			t.Errorf("WaveIDs[%d] 槽位已失效", i)
 			continue
 		}
-		if m.HP <= 0 {
-			t.Errorf("WaveIDs[%d] 怪 HP=%v，刷出即应为满血", i, m.HP)
+		if m.IsDead() || m.HP <= 0 {
+			t.Errorf("WaveIDs[%d] 刷出即应为满血，实际 dead=%v HP=%v", i, m.IsDead(), m.HP)
 		}
 	}
 }
