@@ -59,6 +59,10 @@ config.local.*
 [Oo]bj/
 [Bb]uild/
 [Bb]uilds/
+# 上面两条是 Unity 预留规则，会连服务端源码 internal/game/build 一起吞掉
+# （实测 git check-ignore -v 报 .gitignore:60:[Bb]uild/）。取反必须在它们之后，
+# 且要先取反目录本身：git 不会递归进已被忽略的目录，只取反里面的文件无效。
+!/internal/game/build/
 [Ll]ogs/
 [Uu]ser[Ss]ettings/
 MemoryCaptures/
