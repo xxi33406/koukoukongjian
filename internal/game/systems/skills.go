@@ -12,11 +12,12 @@ import (
 // 只把生命挪进 config 会让"改血量上限"同时改两处来源。
 const BaseMaxHP = 100.0
 
-// ActiveSkillChance 是主动技能进入候选池的抽中概率（Task 6 用）。
+// ActiveSkillChance 已搬到 build 包（internal/game/build/choices.go）。
 //
-// Task 5 先把常量落在这里：它是技能系统的数值参数，与 RecomputeDerived /
-// CastActive 同属一块内容。Task 6 的候选生成直接引它，不必跨包搬。
-const ActiveSkillChance = 0.30
+// Task 5 时它先落在这里，Task 6 实现候选生成时移走：它是"候选怎么抽"的
+// 策略参数，属于 build（技能表、ID、Kind 都在那儿）；systems 只负责把
+// 已选中的技能效果算到世界状态上，自己不抽候选，留着就是一个没人读的
+// 第二来源——改一处不生效，正是 AGENTS.md §1.2 那类根因。
 
 // RecomputeDerived 从两个被动槽与等级整体重算派生属性与生命上限。
 //
