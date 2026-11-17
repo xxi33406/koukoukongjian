@@ -49,8 +49,9 @@ type World struct {
 	AggroRescoreTicks uint32
 	PathRecalcTicks   uint32
 	MaxBullets        int
-	Mon               *config.Monster // 怪物参数快照（M3，与 AggroRescoreTicks 同款：拷贝不持有 cfg）
-	Wav               *config.Waves   // 波次参数快照（M3，同 Mon 模式）
+	Mon               *config.Monster     // 怪物参数快照（M3，与 AggroRescoreTicks 同款：拷贝不持有 cfg）
+	Wav               *config.Waves       // 波次参数快照（M3，同 Mon 模式）
+	Prog              *config.Progression // 升级曲线快照（M4，同 Mon 模式）
 
 	// 地图与据点（M3）。HasMap=false 表示旧调用方（老测试）没跑 mapgen，
 	// waves/ai/fog 全部短路成 M2 行为——老测试零改动。
@@ -81,6 +82,12 @@ func NewWorld(cfg *config.Config, seed int64) *World {
 		MaxBullets:        cfg.Combat.MaxBullets,
 		Mon:               &cfg.Monster,
 		Wav:               &cfg.Waves,
+		// Prog 与 Mon/Wav 同款：只存 cfg 里的参数块指针，不持有整个 cfg。
+		// 运行期是只读快照——系统只读 ExpBase/ExpGrowth/MaxLevel，没人往
+		// 这里写；调参改的是 cfg 文件并在重启时重新 NewWorld。共享指针而不
+		// 拷贝值，是因为 Progression 有 5 个字段、每个 tick 都可能被读，
+		// 拷进 World 反而让「同一份参数两处存着，改一处不生效」有了空间。
+		Prog: &cfg.Progression,
 	}
 	// 地图生成不在这里调——mapgen import world，NewWorld 再调 mapgen 会构成
 	// import cycle（Go 不允许）。改为由编排层 internal/room 在 NewWorld 之后
