@@ -79,7 +79,13 @@ func TestGrantKillGoldSaturates(t *testing.T) {
 
 	mid, _ := w.Monsters.Spawn()
 
-	GrantKillGold(w, pid, mid)
+	// 返回值必须单独断言：它是"实际发放了多少"，Task 11 的接线与 M6 的
+	// 据点分账都要靠它算队伍总收入。只断言 p.Gold 到位的话，"返回
+	// GoldPerKill 但只加进去 1"这条错误实现照样绿——而那笔账面上会凭空
+	// 多出 7 枚不存在的金币。
+	if got := GrantKillGold(w, pid, mid); got != 1 {
+		t.Fatalf("饱和时返回 %d，期望 1（差多少发多少）", got)
+	}
 
 	if p.Gold != math.MaxUint32 {
 		t.Fatalf("Gold = %d，期望钳到 MaxUint32", p.Gold)
