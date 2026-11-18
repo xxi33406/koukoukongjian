@@ -244,9 +244,10 @@ func (p *PlayerState) Kill() {
 	p.PrevAttackHeld = false
 
 	// 所有引导一律打断：鬼魂不能继续开背包，也不能继承别人的复活引导。
+	// Busy 位由下面那句 Flags = 0 一并清掉，这里不单独清——两处都写会让
+	// 人以为「清 Busy」与「清整个 Flags」是两件不同的事。
 	p.InventoryOpenAt = 0
 	p.ReviveAt = 0
-	p.Flags &^= PlayerFlagBusy
 
 	// 限时增益全部失效。留着会出现"死了反而更强"：无敌跑图、
 	// 冲刺速度的鬼魂比活人还快，拴绳每 tick 都触发。
@@ -254,8 +255,14 @@ func (p *PlayerState) Kill() {
 	p.SpeedBuffLeft = 0
 	p.SpeedBuffMul = 0
 
-	// PlayerFlagInvulnerable 与 Busy 一起清（Flags 整块清零最省心：
-	// 鬼魂不受击的判据在 ResolveDamage 里按 State 判，不靠 flag）。
+	// Flags 整块清零。鬼魂不受击的判据在 ResolveDamage 里按 State 判、
+	// 不靠 flag，所以这里清什么都不影响「鬼魂不吃伤害」。
+	//
+	// PlayerFlagReconnecting 也一起清：它目前零生产写入方（全仓 grep 只有
+	// 定义），掉线重连还没做（spec L128 属 M5 之后）。等它真被写进来时，
+	// 要重新审视这里——那句「掉线期间被打死会让重连标记消失」的判断届时
+	// 才成立。现在保留整块清零，是因为「活着才谈得上重连」在语义上成立：
+	// 死人是鬼魂，不是「掉线的活人」。
 	p.Flags = 0
 }
 
