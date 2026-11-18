@@ -324,7 +324,7 @@ type PickupState struct {
 	Pos     Vec2
 	Kind    PickupKind
 	RefID   uint16   // 指向具体物品表的下标
-	Life    float32  // 剩余存活时间，秒；到 0 消失（spec L131 的 10 秒）
+	Life    float32  // 剩余存活时间，秒；到 0 消失（spec L131，M4 规格修订为 30 秒）
 	Carrier EntityID // 正被鬼魂搬运时非零（spec L66）
 	Amount  int32    // 金币/血量的数量
 }
