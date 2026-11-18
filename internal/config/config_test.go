@@ -402,3 +402,43 @@ func abs(x float64) float64 {
 	}
 	return x
 }
+
+// TestValidateRejectsBadFastChaseDist 钉死 monster.fast_chase_dist > 0。
+//
+// 根因（M3 审查 M1）：反风筝逻辑是 `if dist > FastChaseDist { 用 Speed×Mul }`
+// （internal/game/ai/ai.go:157-162 chaseSpeed）。阈值 <= 0 时这个比较对任何
+// 非零距离恒为真，怪物永远以加速档跑——「远程风筝怪」这个玩法直接消失，
+// 而且不会有任何报错或异常日志，只是打起来感觉"怪怎么一直这么快"。
+// 这是「用值推断状态」的近亲：0 既没被当成合法值校验，也没被当成禁用值
+// 特判，于是它成了一个能通过全部校验、却让玩法失效的合法配置。
+func TestValidateRejectsBadFastChaseDist(t *testing.T) {
+	cases := []struct {
+		name string
+		mut  func(*Config)
+	}{
+		{"追赶距离为 0", func(c *Config) { c.Monster.FastChaseDist = 0 }},
+		{"追赶距离为负", func(c *Config) { c.Monster.FastChaseDist = -1 }},
+		{"追赶距离为 NaN", func(c *Config) { c.Monster.FastChaseDist = math.NaN() }},
+		{"追赶距离为 Inf", func(c *Config) { c.Monster.FastChaseDist = math.Inf(1) }},
+		// Inf 也必须拦：dist > +Inf 恒为假，等于反风筝永远不触发——
+		// 与 <=0 是同一个坑的另一端，同一条校验顺带覆盖。
+	}
+	for _, tc := range cases {
+		c := Default()
+		tc.mut(c)
+		if err := c.Validate(); err == nil {
+			t.Errorf("%s：Validate 应报错，却返回 nil", tc.name)
+		}
+	}
+}
+
+// TestValidateAcceptsFastChaseDistAboveSight 是正向边界：追赶距离大于视野
+// 是合法配置（怪物发现你的距离比它开始加速的距离还近，等于不会加速），
+// 只是不好玩，不该被当作错误拒绝。
+func TestValidateAcceptsFastChaseDistAboveSight(t *testing.T) {
+	c := Default()
+	c.Monster.FastChaseDist = c.Monster.SightRange + 10
+	if err := c.Validate(); err != nil {
+		t.Errorf("FastChaseDist 大于视野应通过 Validate，却报错：%v", err)
+	}
+}

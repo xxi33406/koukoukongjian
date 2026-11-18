@@ -105,6 +105,16 @@ type Room struct {
 	// wavesEnabled 是波次开关的落定值（Options 互斥裁定后的结果）。
 	// Task 10 波次系统接线前只有声明无消费；先落字段，接线时直接读。
 	wavesEnabled bool
+	// hubStates 是上一 tick 各据点的 HubState 快照，长度 = len(World.Hubs)。
+	//
+	// 用来在 tick 里 diff 出「新开波」与「清场」并打日志——waves.go 文件头
+	// 承诺「波次事件只进 room 日志」，但 game 包不许依赖 log、UpdateWaves
+	// 又不返回值，所以这个承诺只能在 room 侧兑现：比较前后状态。
+	//
+	// 只在 tick goroutine 里读写，无需加锁（AGENTS §2.5）。首 tick 时切片
+	// 为空、recordHubStates 按当前据点数量重建；全零值天然等于 HubIdle，
+	// 正好是据点初始态，不需要"首 tick 特判"。
+	hubStates []world.HubState
 	// pendingLevelUps 是本 tick 子步里升了级的玩家，攒到子步循环结束后
 	// 统一处理（发候选 + 开无敌窗口）。
 	//
@@ -417,7 +427,13 @@ func (r *Room) tick() {
 	// no-op），但 wavesEnabled=false 的 M2 房间连函数都不该进：降级世界
 	// 没有据点，短路语义与 fog（r.fog==nil）保持一致。
 	if r.wavesEnabled {
+		// 顺序是语义：先记旧值 → 推进状态机 → 比出新旧差异打日志。
+		// 反过来的话比较的两侧都是新值，差异恒为空，日志永远不出现——
+		// 而"日志不出现"与"这一 tick 真的没开波"无法区分，正是这次要
+		// 修掉的"注释承诺了但没人验证"。
+		r.recordHubStates()
 		systems.UpdateWaves(r.World)
+		r.logHubChanges()
 	}
 
 	// 2. AI 决策（M3 Task 10）：每 tick 一次，循环放在子步循环之外、
@@ -504,6 +520,50 @@ func (r *Room) tick() {
 
 	w.Tick++
 	r.worldTick.Store(w.Tick)
+}
+
+// recordHubStates 把当前各据点的波次状态记进 hubStates，供本 tick 之后比较。
+//
+// 必须紧贴 UpdateWaves 之前调用：它记录的是"推进前"的值。
+func (r *Room) recordHubStates() {
+	hubs := r.World.Hubs
+	// 按需重建：据点数量由地图生成决定，Run 之前就固定了，但 recordHubStates
+	// 是第一个写 hubStates 的地方，这里顺手做长度对齐可以省掉一个
+	// "New 里 initialize"的隐式契约（忘了初始化 → 长度 0 → 永远检测不到变化）。
+	if cap(r.hubStates) < len(hubs) {
+		r.hubStates = make([]world.HubState, len(hubs))
+	}
+	r.hubStates = r.hubStates[:len(hubs)]
+	for i := range hubs {
+		r.hubStates[i] = hubs[i].State
+	}
+}
+
+// logHubChanges 比较 hubStates 与当前据点状态，把「新开波」与「清场」打出来。
+//
+// 为什么在 room 而不是 waves 里打日志：internal/game/** 不许依赖网络/房间
+// 包，也不该为一个日志引入 log 依赖；UpdateWaves 的签名已定稿为无返回值
+// （返回事件会让 game 包依赖一套尚未定论的 HubEvent 结构，M6 据点经济才定）。
+// 在 tick 里 diff 状态是零侵入的做法：waves.go 一行不用改。
+func (r *Room) logHubChanges() {
+	for i := range r.World.Hubs {
+		hub := &r.World.Hubs[i]
+		if i >= len(r.hubStates) || r.hubStates[i] == hub.State {
+			continue
+		}
+		prev := r.hubStates[i]
+		switch hub.State {
+		case world.HubFighting:
+			// 只有从非 Fighting 进入 Fighting 才是"新开波"；Fighting → Fighting
+			// 是刷下一波（上面的相等判断已挡掉），不重复打。
+			r.log.Info("据点开波",
+				"hub", i, "wave", hub.Wave,
+				"monsters", hub.WaveN, "prev", prev.String())
+		case world.HubCleared:
+			r.log.Info("据点清场",
+				"hub", i, "wave", hub.Wave, "prev", prev.String())
+		}
+	}
 }
 
 // subStep 推进一个物理子步。

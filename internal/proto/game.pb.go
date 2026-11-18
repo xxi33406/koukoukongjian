@@ -1132,8 +1132,22 @@ type Snapshot struct {
 	Removes        []uint32               `protobuf:"varint,6,rep,packed,name=removes,proto3" json:"removes,omitempty"`                                // 本 tick 消失的实体 ID
 	FogDelta       []uint64               `protobuf:"varint,7,rep,packed,name=fog_delta,json=fogDelta,proto3" json:"fog_delta,omitempty"`              // 新点亮的迷雾格
 	Events         []*GameEvent           `protobuf:"bytes,8,rep,name=events,proto3" json:"events,omitempty"`                                          // 搭车的小事件
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// removes_kind 与 removes 平行同序：第 i 个元素描述第 i 个 removes 的
+	// 实体种类。两个切片长度必须永远相等。
+	//
+	// 为什么需要它：removes 只有裸 ID，而四个实体池各自从索引 1 开始编号，
+	// 同一个 uint32 可以同时是"玩家 1"和"怪物 1"。客户端按裸 ID 删条目时，
+	// 撞号就会删掉同号但不同池的那个实体——表现为场上少一只怪、多一条幽灵。
+	RemovesKind []EntityKind `protobuf:"varint,9,rep,packed,name=removes_kind,json=removesKind,proto3,enum=proto.EntityKind" json:"removes_kind,omitempty"`
+	// full 表示这一帧是全量快照：客户端应清空自己的实体表，然后完全按
+	// adds 重建。
+	//
+	// 为什么需要显式标志：快照走不可靠 UDP，丢一个 remove 包那条实体就
+	// 永久留在客户端表里了。全量帧是唯一的自愈机会，但客户端无法从字段
+	// 形状上分辨"全量"与"刚好没有变化的增量帧"——两者可以完全同形。
+	Full          bool `protobuf:"varint,10,opt,name=full,proto3" json:"full,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *Snapshot) Reset() {
@@ -1220,6 +1234,20 @@ func (x *Snapshot) GetEvents() []*GameEvent {
 		return x.Events
 	}
 	return nil
+}
+
+func (x *Snapshot) GetRemovesKind() []EntityKind {
+	if x != nil {
+		return x.RemovesKind
+	}
+	return nil
+}
+
+func (x *Snapshot) GetFull() bool {
+	if x != nil {
+		return x.Full
+	}
+	return false
 }
 
 // EntityDelta 是实体状态。全量时所有字段都填，增量时只填变化的。
@@ -1951,7 +1979,7 @@ const file_internal_proto_game_proto_rawDesc = "" +
 	"\tInventory\x12#\n" +
 	"\ractive_skills\x18\x01 \x03(\rR\factiveSkills\x12%\n" +
 	"\x0epassive_skills\x18\x02 \x03(\rR\rpassiveSkills\x12\x14\n" +
-	"\x05items\x18\x03 \x03(\rR\x05items\"\xb3\x02\n" +
+	"\x05items\x18\x03 \x03(\rR\x05items\"\xfd\x02\n" +
 	"\bSnapshot\x12\x1f\n" +
 	"\vserver_tick\x18\x01 \x01(\rR\n" +
 	"serverTick\x12(\n" +
@@ -1961,7 +1989,10 @@ const file_internal_proto_game_proto_rawDesc = "" +
 	"\aupdates\x18\x05 \x03(\v2\x12.proto.EntityDeltaR\aupdates\x12\x18\n" +
 	"\aremoves\x18\x06 \x03(\rR\aremoves\x12\x1b\n" +
 	"\tfog_delta\x18\a \x03(\x04R\bfogDelta\x12(\n" +
-	"\x06events\x18\b \x03(\v2\x10.proto.GameEventR\x06events\"\xc6\x02\n" +
+	"\x06events\x18\b \x03(\v2\x10.proto.GameEventR\x06events\x124\n" +
+	"\fremoves_kind\x18\t \x03(\x0e2\x11.proto.EntityKindR\vremovesKind\x12\x12\n" +
+	"\x04full\x18\n" +
+	" \x01(\bR\x04full\"\xc6\x02\n" +
 	"\vEntityDelta\x12\x1b\n" +
 	"\tentity_id\x18\x01 \x01(\rR\bentityId\x12%\n" +
 	"\x04kind\x18\x02 \x01(\x0e2\x11.proto.EntityKindR\x04kind\x12\x1e\n" +
@@ -2073,30 +2104,31 @@ var file_internal_proto_game_proto_depIdxs = []int32{
 	18, // 5: proto.Snapshot.adds:type_name -> proto.EntityDelta
 	18, // 6: proto.Snapshot.updates:type_name -> proto.EntityDelta
 	19, // 7: proto.Snapshot.events:type_name -> proto.GameEvent
-	0,  // 8: proto.EntityDelta.kind:type_name -> proto.EntityKind
-	10, // 9: proto.EntityDelta.pos:type_name -> proto.Vec2Q
-	10, // 10: proto.EntityDelta.vel:type_name -> proto.Vec2Q
-	1,  // 11: proto.GameEvent.kind:type_name -> proto.GameEventKind
-	2,  // 12: proto.Envelope.hello:type_name -> proto.Hello
-	3,  // 13: proto.Envelope.hello_ack:type_name -> proto.HelloAck
-	4,  // 14: proto.Envelope.join_room:type_name -> proto.JoinRoom
-	5,  // 15: proto.Envelope.join_ok:type_name -> proto.JoinOk
-	6,  // 16: proto.Envelope.player_joined:type_name -> proto.PlayerJoined
-	7,  // 17: proto.Envelope.player_left:type_name -> proto.PlayerLeft
-	8,  // 18: proto.Envelope.input:type_name -> proto.Input
-	17, // 19: proto.Envelope.snapshot:type_name -> proto.Snapshot
-	20, // 20: proto.Envelope.ping:type_name -> proto.Ping
-	21, // 21: proto.Envelope.pong:type_name -> proto.Pong
-	22, // 22: proto.Envelope.req_full_snapshot:type_name -> proto.ReqFullSnapshot
-	13, // 23: proto.Envelope.skill_choices:type_name -> proto.SkillChoices
-	14, // 24: proto.Envelope.choose_skill:type_name -> proto.ChooseSkill
-	15, // 25: proto.Envelope.interact:type_name -> proto.Interact
-	16, // 26: proto.Envelope.inventory:type_name -> proto.Inventory
-	27, // [27:27] is the sub-list for method output_type
-	27, // [27:27] is the sub-list for method input_type
-	27, // [27:27] is the sub-list for extension type_name
-	27, // [27:27] is the sub-list for extension extendee
-	0,  // [0:27] is the sub-list for field type_name
+	0,  // 8: proto.Snapshot.removes_kind:type_name -> proto.EntityKind
+	0,  // 9: proto.EntityDelta.kind:type_name -> proto.EntityKind
+	10, // 10: proto.EntityDelta.pos:type_name -> proto.Vec2Q
+	10, // 11: proto.EntityDelta.vel:type_name -> proto.Vec2Q
+	1,  // 12: proto.GameEvent.kind:type_name -> proto.GameEventKind
+	2,  // 13: proto.Envelope.hello:type_name -> proto.Hello
+	3,  // 14: proto.Envelope.hello_ack:type_name -> proto.HelloAck
+	4,  // 15: proto.Envelope.join_room:type_name -> proto.JoinRoom
+	5,  // 16: proto.Envelope.join_ok:type_name -> proto.JoinOk
+	6,  // 17: proto.Envelope.player_joined:type_name -> proto.PlayerJoined
+	7,  // 18: proto.Envelope.player_left:type_name -> proto.PlayerLeft
+	8,  // 19: proto.Envelope.input:type_name -> proto.Input
+	17, // 20: proto.Envelope.snapshot:type_name -> proto.Snapshot
+	20, // 21: proto.Envelope.ping:type_name -> proto.Ping
+	21, // 22: proto.Envelope.pong:type_name -> proto.Pong
+	22, // 23: proto.Envelope.req_full_snapshot:type_name -> proto.ReqFullSnapshot
+	13, // 24: proto.Envelope.skill_choices:type_name -> proto.SkillChoices
+	14, // 25: proto.Envelope.choose_skill:type_name -> proto.ChooseSkill
+	15, // 26: proto.Envelope.interact:type_name -> proto.Interact
+	16, // 27: proto.Envelope.inventory:type_name -> proto.Inventory
+	28, // [28:28] is the sub-list for method output_type
+	28, // [28:28] is the sub-list for method input_type
+	28, // [28:28] is the sub-list for extension type_name
+	28, // [28:28] is the sub-list for extension extendee
+	0,  // [0:28] is the sub-list for field type_name
 }
 
 func init() { file_internal_proto_game_proto_init() }

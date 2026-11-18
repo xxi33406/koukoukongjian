@@ -102,8 +102,9 @@ type bot struct {
 
 	// entities 是快照流重放出的在场实体表（-v 实体行的数据源），
 	// 只在 recvSnapshots 那个 goroutine 里读写，无需加锁。
+	// 键带池种类（entityRef）：四个池各自从索引 1 编号，裸 ID 会撞号。
 	// 逻辑见 entities.go；单测在 entities_test.go。
-	entities map[uint32]entInfo
+	entities map[entityRef]entInfo
 
 	// selfID 是自己的实体 id（来自快照 self 字段）；invalidSelfID 表示
 	// 还没收到过带 self 的快照。
@@ -126,7 +127,7 @@ func runBot(ctx context.Context, addr, name string, idx, inputHz int, circle, at
 	}
 	defer c.Close()
 
-	b := &bot{name: name, idx: idx, selfID: invalidSelfID, entities: make(map[uint32]entInfo)}
+	b := &bot{name: name, idx: idx, selfID: invalidSelfID, entities: make(map[entityRef]entInfo)}
 
 	// Client.Run 会阻塞在读循环上，所以放独立 goroutine。
 	runErr := make(chan error, 1)
@@ -382,15 +383,11 @@ func (b *bot) recvSnapshots(ctx context.Context, c *netx.Client, verbose bool) {
 		}
 
 		// —— 实体表重放 ——
-		for _, d := range snap.Adds {
-			b.applyDelta(d)
-		}
-		for _, d := range snap.Updates {
-			b.applyDelta(d)
-		}
-		for _, id := range snap.Removes {
-			delete(b.entities, id)
-		}
+		//
+		// 一步到位交给 applySnapshot：全量帧要先清表重建（丢包自愈），
+		// removes 要按 kind 删。这三件事的顺序是协议语义，散在 main 里
+		// 迟早被某次"顺手加一行"打乱，且有单测钉住才好改。
+		b.applySnapshot(snap)
 
 		// —— 事件统计 ——
 		// KILL：A=击杀者、B=被击杀者；DEATH：A 无效（Reap 兜底）、B=死者。

@@ -45,6 +45,31 @@ const (
 	typePickup
 )
 
+// entityTypeToProto 把内部的 entityType 映射成协议枚举。
+//
+// 为什么不直接 cast：typePlayer 是 iota 的 0，而 proto 的
+// ENTITY_KIND_UNSPECIFIED 也是 0，PLAYER 却是 1——两套编号整体错位一格。
+// 直接转类型会把玩家标成"未指定"、把拾取物标成子弹，而且因为枚举底层
+// 都是整数，编译器一个警告都不会给。
+//
+// 未知值返回 UNSPECIFIED 而不是 panic：这函数的产出只进 removes_kind，
+// 客户端对 UNSPECIFIED 的处理是"按裸 ID 删"（老客户端的退化路径），
+// 比让整个 tick 崩掉合理。
+func entityTypeToProto(t entityType) proto.EntityKind {
+	switch t {
+	case typePlayer:
+		return proto.EntityKind_ENTITY_KIND_PLAYER
+	case typeMonster:
+		return proto.EntityKind_ENTITY_KIND_MONSTER
+	case typeBullet:
+		return proto.EntityKind_ENTITY_KIND_BULLET
+	case typePickup:
+		return proto.EntityKind_ENTITY_KIND_PICKUP
+	default:
+		return proto.EntityKind_ENTITY_KIND_UNSPECIFIED
+	}
+}
+
 // entityKey 是判定"实体是否变化"的比较键。
 //
 // 只放真正影响客户端的字段。放进 Gold、PathIdx 这类纯服务端状态会让
@@ -109,6 +134,9 @@ func (b *Builder) Build(w *world.World, selfID world.EntityID, full bool) (*prot
 
 	snap := &proto.Snapshot{
 		ServerTick: w.Tick,
+		// 客户端靠这个标志决定"清空实体表重建"还是"增量合并"。
+		// 此刻 full 已被上面的周期性判定覆写过，正值即本帧全量。
+		Full: full,
 	}
 
 	// 当前这一帧出现过的实体，用来算 removes。
@@ -189,6 +217,8 @@ func (b *Builder) Build(w *world.World, selfID world.EntityID, full bool) (*prot
 	for k := range b.seen {
 		if _, ok := alive[k]; !ok {
 			snap.Removes = append(snap.Removes, k.id)
+			// 与 removes 平行同序：第 i 个 kind 描述第 i 个 remove。
+			snap.RemovesKind = append(snap.RemovesKind, entityTypeToProto(k.kind))
 			delete(b.seen, k)
 			st.Removes++
 		}

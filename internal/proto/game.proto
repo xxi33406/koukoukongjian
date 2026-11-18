@@ -178,6 +178,20 @@ message Snapshot {
   repeated uint32 removes = 6;      // 本 tick 消失的实体 ID
   repeated uint64 fog_delta = 7;    // 新点亮的迷雾格
   repeated GameEvent events = 8;    // 搭车的小事件
+  // removes_kind 与 removes 平行同序：第 i 个元素描述第 i 个 removes 的
+  // 实体种类。两个切片长度必须永远相等。
+  //
+  // 为什么需要它：removes 只有裸 ID，而四个实体池各自从索引 1 开始编号，
+  // 同一个 uint32 可以同时是"玩家 1"和"怪物 1"。客户端按裸 ID 删条目时，
+  // 撞号就会删掉同号但不同池的那个实体——表现为场上少一只怪、多一条幽灵。
+  repeated EntityKind removes_kind = 9;
+  // full 表示这一帧是全量快照：客户端应清空自己的实体表，然后完全按
+  // adds 重建。
+  //
+  // 为什么需要显式标志：快照走不可靠 UDP，丢一个 remove 包那条实体就
+  // 永久留在客户端表里了。全量帧是唯一的自愈机会，但客户端无法从字段
+  // 形状上分辨"全量"与"刚好没有变化的增量帧"——两者可以完全同形。
+  bool full = 10;
 }
 
 // EntityDelta 是实体状态。全量时所有字段都填，增量时只填变化的。

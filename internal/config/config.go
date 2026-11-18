@@ -335,6 +335,7 @@ func (c *Config) Validate() error {
 	addNaN("monster.attack_damage", c.Monster.AttackDamage)
 	addNaN("monster.attack_cooldown_s", c.Monster.AttackCooldownS)
 	addNaN("monster.fast_chase_mul", c.Monster.FastChaseMul)
+	addNaN("monster.fast_chase_dist", c.Monster.FastChaseDist)
 	addNaN("monster.sight_range", c.Monster.SightRange)
 	addNaN("progression.exp_base", c.Progression.ExpBase)
 	addNaN("progression.exp_growth", c.Progression.ExpGrowth)
@@ -376,6 +377,17 @@ func (c *Config) Validate() error {
 	}
 	if c.Monster.FastChaseMul < 1 {
 		add("monster.fast_chase_mul = %v，必须 ≥1（否则是减速）", c.Monster.FastChaseMul)
+	}
+	// FastChaseDist 必须为正有限值。
+	//
+	// 反风筝逻辑是 `if dist > FastChaseDist { 用 Speed×FastChaseMul }`
+	//（internal/game/ai/ai.go:157-162）：阈值 <=0 时对任何非零距离恒真，
+	// 怪物永远加速档，"远程风筝"这个玩法直接消失且没有任何报错；阈值
+	// 为 +Inf 时比较恒假，反风筝永不触发——同一个坑的两端。
+	// 用 <=0 || IsInf 而不是单侧比较：Inf 能穿过一切区间比较，与 NaN
+	// 同族（NaN 由下面的 addNaN 拦）。
+	if c.Monster.FastChaseDist <= 0 || math.IsInf(c.Monster.FastChaseDist, 0) {
+		add("monster.fast_chase_dist = %v，必须为正有限值（米）", c.Monster.FastChaseDist)
 	}
 	if c.Monster.SightRange < 1 || c.Monster.SightRange > 128 {
 		add("monster.sight_range = %v，必须在 1..128", c.Monster.SightRange)

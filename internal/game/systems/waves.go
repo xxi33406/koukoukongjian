@@ -14,6 +14,12 @@ import (
 // proto——GameEventKind 不加枚举连累 Unity 侧，M6 据点经济再定义真正的
 // HubEvent。
 //
+// 日志的落点在调用方（M4 Task 11 兑现）：本包不 import log，也不返回事件；
+// internal/room/room.go 的 tick 在调本函数前后 diff 各据点的 HubState，
+// 由 recordHubStates / logHubChanges 打出「据点开波」「据点清场」。所以
+// 「波次事件只进 room 日志」这句话的实现不在本文件，改状态机时不必在这里
+// 找日志代码。
+//
 // M4 规格修订（用户拍板）：怪物开局就刷在地图上，不再等玩家进圈。原来的
 // 「任一活玩家在据点半径内才开波」被去掉，HubIdle 变成纯粹的初始态。
 // 理由：怪是地图的一部分（玩家可以绕路、可以隔着走廊看到它们），而不是

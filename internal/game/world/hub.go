@@ -1,5 +1,7 @@
 package world
 
+import "strconv"
+
 // Hub 是一个据点：布局数据（mapgen 生成时定死）+ 运行时波次状态（waves 系统用）。
 type Hub struct {
 	Center  Vec2    // 世界坐标（格中心）
@@ -25,3 +27,22 @@ const (
 	HubFighting                 // 波次进行中
 	HubCleared                  // 全部波清完
 )
+
+// String 给日志用。
+//
+// 为什么不直接打 %v：HubState 的底层是 uint8，%v 打出来是 0/1/2，看日志
+// 的人得回去翻常量表。日志是给人看的，别让人做额外的查表工作。
+// 未知值打数值而不是 panic：状态机是纯内部的，出现未知值时要看得到它
+// 是什么，而不是让打日志这一步把整个 tick 带崩。
+func (s HubState) String() string {
+	switch s {
+	case HubIdle:
+		return "idle"
+	case HubFighting:
+		return "fighting"
+	case HubCleared:
+		return "cleared"
+	default:
+		return "HubState(" + strconv.Itoa(int(s)) + ")"
+	}
+}

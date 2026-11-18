@@ -632,3 +632,104 @@ func BenchmarkBuildSnapshot(b *testing.B) {
 		bld.Build(w, world.InvalidID, false)
 	}
 }
+
+// TestRemovesKindParallelToRemoves 钉死 removes / removes_kind 的平行同序契约。
+//
+// 为什么必须有这条测试：removes 是裸 uint32（协议历史遗留），玩家池与怪物池
+// 各自从索引 1 编号，同一个数值可以同时是"玩家 1"和"怪物 1"。客户端只有把
+// 第 i 个 removes_kind 配第 i 个 removes 才能删对条目。两个切片一旦长度不等，
+// 按下标配对就会整段错位——删掉的是另一只怪、留下的是一条幽灵。
+//
+// 这里刻意让四个池的第一个实体拿到同一个 ID：配对是否正确，全看 kind；
+// 只按数值建期望表的话，这条测试会"因为撞号而无法区分"，等于没测。
+func TestRemovesKindParallelToRemoves(t *testing.T) {
+	w := newTestWorld(t)
+	b := NewBuilder()
+
+	pid, p := spawnPlayer(t, w)
+	mid, m := w.Monsters.Spawn()
+	bid, bl := w.Bullets.Spawn()
+	uid, pk := w.Pickups.Spawn()
+	if p == nil || m == nil || bl == nil || pk == nil {
+		t.Fatal("四个池各自生成失败")
+	}
+	// 前提校验：撞号是这条测试的核心场景，不撞号就测不出配对错位。
+	if pid != mid || pid != bid || pid != uid {
+		t.Fatalf("四个池的首个实体未撞号：玩家=%d 怪物=%d 子弹=%d 拾取物=%d",
+			pid, mid, bid, uid)
+	}
+	bl.OwnerID = pid
+	bl.Life = 10
+
+	// 先让四个实体都进 seen（首帧必然全量，adds 里各来一条）。
+	first, _ := b.Build(w, world.InvalidID, false)
+	if len(first.Adds) != 4 {
+		t.Fatalf("首帧 adds = %d，期望 4", len(first.Adds))
+	}
+
+	// 同一帧里全部消失：removes 会有 4 条。
+	w.Players.Kill(pid)
+	w.Monsters.Kill(mid)
+	w.Bullets.Kill(bid)
+	w.Pickups.Kill(uid)
+
+	snap, st := b.Build(w, world.InvalidID, false)
+
+	if st.Removes != 4 {
+		t.Fatalf("removes = %d，期望 4", st.Removes)
+	}
+	if len(snap.Removes) != len(snap.RemovesKind) {
+		t.Fatalf("len(removes)=%d 与 len(removes_kind)=%d 不等——平行数组已错位",
+			len(snap.Removes), len(snap.RemovesKind))
+	}
+
+	// removes 来自 map 遍历，顺序随机；只能按"配对"校验，逐项比对期望集合。
+	want := map[proto.EntityKind]bool{
+		proto.EntityKind_ENTITY_KIND_PLAYER:  true,
+		proto.EntityKind_ENTITY_KIND_MONSTER: true,
+		proto.EntityKind_ENTITY_KIND_BULLET:  true,
+		proto.EntityKind_ENTITY_KIND_PICKUP:  true,
+	}
+	for i, id := range snap.Removes {
+		if id != uint32(pid) {
+			t.Fatalf("removes[%d] = %d，期望 %d（四者撞号）", i, id, uint32(pid))
+		}
+		k := snap.RemovesKind[i]
+		if !want[k] {
+			t.Fatalf("removes_kind[%d] = %v，不是四种实体之一（或重复）", i, k)
+		}
+		delete(want, k)
+	}
+	if len(want) != 0 {
+		t.Fatalf("removes_kind 缺少这些种类：%v（四者必须各出现一次）", want)
+	}
+}
+
+// TestSnapshotFullFlag 钉死"这一帧是全量"的显式标志。
+//
+// 客户端不能靠"adds 特别多"猜全量：一帧刚好没实体变化时，全量帧与增量帧
+// 在字段上完全同形。而"是不是全量"决定客户端要不要丢弃整张实体表重建——
+// 猜错的代价是幽灵条目永久留存（丢一个 remove 包就再也没有机会纠正）。
+func TestSnapshotFullFlag(t *testing.T) {
+	w := newTestWorld(t)
+	selfID, _ := spawnPlayer(t, w)
+	b := NewBuilder()
+
+	snap, st := b.Build(w, selfID, false)
+	if !st.Full || !snap.Full {
+		t.Fatalf("首帧应全量：stats.Full=%v snap.Full=%v", st.Full, snap.Full)
+	}
+
+	w.Tick++
+	snap, st = b.Build(w, selfID, false)
+	if st.Full || snap.Full {
+		t.Fatalf("相邻帧应增量：stats.Full=%v snap.Full=%v", st.Full, snap.Full)
+	}
+
+	// 强制全量（Reset / 重连路径）也必须置位——否则客户端不会重建。
+	b.Reset()
+	snap, st = b.Build(w, selfID, false)
+	if !st.Full || !snap.Full {
+		t.Fatalf("Reset 后应全量：stats.Full=%v snap.Full=%v", st.Full, snap.Full)
+	}
+}
