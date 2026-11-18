@@ -46,3 +46,40 @@ func (s HubState) String() string {
 		return "HubState(" + strconv.Itoa(int(s)) + ")"
 	}
 }
+
+// NearestAltar 返回 radius 内最近的祭坛位置。
+//
+// 祭坛就是据点中心（spec L51「祭坛设于据点内」），M5 不新增实体：
+// 据点空地圆半径是 HubRadiusCells=5 米，中心附近一定在空地上，不会
+// 嵌墙，也不需要 mapgen 额外挖地形。M6 若要做「祭坛有独立血量、会被
+// 怪拆」再升级成实体（那时这个函数要改成返回实体 ID）。
+//
+// 只判距离不判视线：祭坛在据点空地里，周围没有墙；加视线检查反而
+// 会出现"站在祭坛边上但隔着一个人就说找不到"的怪事。
+//
+// HasMap=false（老测试、降级房间）时永远返回 false：没有据点就没有祭坛，
+// 与 waves/ai/fog 的短路口径一致。
+func (w *World) NearestAltar(pos Vec2, radius float64) (Vec2, bool) {
+	if !w.HasMap || radius <= 0 || len(w.Hubs) == 0 {
+		return Vec2{}, false
+	}
+	radiusSq := radius * radius
+
+	var best Vec2
+	bestSq := 0.0
+	found := false
+	for i := range w.Hubs {
+		d := pos.DistSq(w.Hubs[i].Center)
+		if d > radiusSq {
+			continue
+		}
+		// 严格小于配 found 首判定：等距时取先遍历到的（Hub 顺序由
+		// mapgen 定死，回放可复现）。
+		if !found || d < bestSq {
+			best = w.Hubs[i].Center
+			bestSq = d
+			found = true
+		}
+	}
+	return best, found
+}
