@@ -8,11 +8,17 @@ import (
 
 // UpdateWaves 推进全部据点的波次状态机（每 tick 一次，tick 循环里、子步外）。
 //
-// 状态机：HubIdle（任一活玩家进圈）→ startWave → HubFighting（当前波全灭
-// 且还有后续波 → 等到 NextAt 刷下一波；最后一波清完 → HubCleared 终态，
-// 再调不重刷）。签名无返回值（计划 L2273 定稿）：波次事件只进 room 日志
-// 不下发 proto——GameEventKind 不加枚举连累 Unity 侧，M6 据点经济再定义
-// 真正的 HubEvent。
+// 状态机：HubIdle（初始态，立刻刷第一波）→ HubFighting（当前波全灭且还有
+// 后续波 → 等到 NextAt 刷下一波；最后一波清完 → HubCleared 终态，再调不
+// 重刷）。签名无返回值（计划 L2273 定稿）：波次事件只进 room 日志不下发
+// proto——GameEventKind 不加枚举连累 Unity 侧，M6 据点经济再定义真正的
+// HubEvent。
+//
+// M4 规格修订（用户拍板）：怪物开局就刷在地图上，不再等玩家进圈。原来的
+// 「任一活玩家在据点半径内才开波」被去掉，HubIdle 变成纯粹的初始态。
+// 理由：怪是地图的一部分（玩家可以绕路、可以隔着走廊看到它们），而不是
+// 玩家一进门凭空变出来的；等待触发也让「每个据点都要打」变成「可以去
+// 没开过的据点白嫖」，与波次作为压力来源的定位不符。
 //
 // 防御：Wav 未装配（老调用方/老测试没经过 NewWorld 新字段）、Hubs 空
 // （HubCount=0 哨兵世界，短路与 ai 包同款）、Terrain nil 时全部 no-op，
@@ -25,9 +31,9 @@ func UpdateWaves(w *world.World) {
 		hub := &w.Hubs[i]
 		switch hub.State {
 		case world.HubIdle:
-			if playerInHub(w, hub) {
-				startWave(w, hub)
-			}
+			// 开局即刷：不看玩家位置。NextAt 由 startWave 定成「现在 +
+			// 波间隔」，所以第一波在第一次调用的这一 tick 就出来。
+			startWave(w, hub)
 		case world.HubFighting:
 			if waveAlive(w, hub) > 0 {
 				continue
@@ -48,20 +54,6 @@ func UpdateWaves(w *world.World) {
 			// 终态：不再刷。
 		}
 	}
-}
-
-// playerInHub 任意活着的玩家在据点半径内即视为进入（4 人合作，一人触发全队收益）。
-// 距离比较用平方，省开方（vec.go DistSq 同款取舍）。
-func playerInHub(w *world.World, hub *world.Hub) bool {
-	in := false
-	w.Players.Each(func(_ world.EntityID, p *world.PlayerState) bool {
-		if p.State == world.PlayerAlive && p.Pos.DistSq(hub.Center) <= hub.RadiusM*hub.RadiusM {
-			in = true
-			return false // 提前中断
-		}
-		return true
-	})
-	return in
 }
 
 // startWave 在据点内撒一波怪。

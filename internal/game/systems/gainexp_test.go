@@ -132,33 +132,44 @@ func TestAddExpAtMaxLevel(t *testing.T) {
 	}
 }
 
-func TestGrantKillExpSharedWithinRadius(t *testing.T) {
+func TestGrantKillExpKillerGetsFull(t *testing.T) {
+	// baseExp 取 10（< 20 的升门槛）：升级会把 Exp 扣成余数，断言就读不到
+	// 全额值了。这条测的是分配比例，不是升级，所以刻意不跨门槛。
 	w := newSystemsWorld(t, 1)
-	// 三个玩家散布在共享半径内，击杀点在原点附近。
-	ps := make([]*world.PlayerState, 3)
-	_, ps[0] = spawnPlayerAt(t, w, 0, 0)
-	_, ps[1] = spawnPlayerAt(t, w, 5, 0)
-	_, ps[2] = spawnPlayerAt(t, w, 0, 15)
+	killerID, killer := spawnPlayerAt(t, w, 0, 0)
+	_, mate := spawnPlayerAt(t, w, 5, 0)
 
-	leveled := GrantKillExp(w, world.V(0, 0), 30)
-	if len(leveled) != 0 {
-		t.Fatalf("每人分 10 点经验不该升级，实际升级 %d 人", len(leveled))
+	GrantKillExp(w, world.V(0, 0), killerID, 10)
+	if killer.Exp != 10 {
+		t.Errorf("击杀者 Exp = %d，期望 10（全额，不因队友在场而变少）", killer.Exp)
 	}
-	for i, p := range ps {
-		if p.Exp != 10 {
-			t.Errorf("玩家 %d 的 Exp = %d，期望 10（30 点三人平分）", i, p.Exp)
-		}
+	if mate.Exp != 3 {
+		t.Errorf("范围内队友 Exp = %d，期望 3（10 × 30%%）", mate.Exp)
+	}
+}
+
+func TestGrantKillExpNearbyRatioDoesNotReduceKiller(t *testing.T) {
+	// 队伍越大，击杀者拿到的越不该变少——这是 30% 分成与平分的分水岭。
+	w := newSystemsWorld(t, 1)
+	killerID, killer := spawnPlayerAt(t, w, 0, 0)
+	spawnPlayerAt(t, w, 3, 0)
+	spawnPlayerAt(t, w, 0, 3)
+	spawnPlayerAt(t, w, 3, 3)
+
+	GrantKillExp(w, world.V(0, 0), killerID, 10)
+	if killer.Exp != 10 {
+		t.Errorf("4 人队里击杀者 Exp = %d，期望仍是 10（平分时为 2）", killer.Exp)
 	}
 }
 
 func TestGrantKillExpNotSharedBeyondRadius(t *testing.T) {
 	w := newSystemsWorld(t, 1)
-	_, near := spawnPlayerAt(t, w, 0, 0)
+	killerID, near := spawnPlayerAt(t, w, 0, 0)
 	_, far := spawnPlayerAt(t, w, ExpShareRadius+1, 0)
 
-	GrantKillExp(w, world.V(0, 0), 10)
-	if near.Exp == 0 {
-		t.Errorf("半径内的玩家 Exp = 0，期望拿到经验")
+	GrantKillExp(w, world.V(0, 0), killerID, 10)
+	if near.Exp != 10 {
+		t.Errorf("击杀者 Exp = %d，期望 10（全额）", near.Exp)
 	}
 	if far.Exp != 0 {
 		t.Errorf("半径外 %v m 的玩家 Exp = %d，期望 0（共享半径 %v m）",
@@ -168,15 +179,15 @@ func TestGrantKillExpNotSharedBeyondRadius(t *testing.T) {
 
 func TestGrantKillExpSkipsDeadPlayers(t *testing.T) {
 	w := newSystemsWorld(t, 1)
-	_, alive := spawnPlayerAt(t, w, 0, 0)
+	killerID, alive := spawnPlayerAt(t, w, 0, 0)
 	_, downed := spawnPlayerAt(t, w, 1, 0)
 	_, ghost := spawnPlayerAt(t, w, 2, 0)
 	downed.State = world.PlayerDowned
 	ghost.State = world.PlayerGhost
 
-	GrantKillExp(w, world.V(0, 0), 10)
-	if alive.Exp == 0 {
-		t.Errorf("存活玩家 Exp = 0，期望拿到经验")
+	GrantKillExp(w, world.V(0, 0), killerID, 10)
+	if alive.Exp != 10 {
+		t.Errorf("击杀者 Exp = %d，期望 10", alive.Exp)
 	}
 	if downed.Exp != 0 {
 		t.Errorf("倒地玩家 Exp = %d，期望 0", downed.Exp)
@@ -186,25 +197,46 @@ func TestGrantKillExpSkipsDeadPlayers(t *testing.T) {
 	}
 }
 
-func TestGrantKillExpSplitsEvenly(t *testing.T) {
+func TestGrantKillExpKillerOutsideRadiusStillCounts(t *testing.T) {
+	// 击杀者自己跑远了（远程点杀），经验仍归他——是他打死的。
+	w := newSystemsWorld(t, 1)
+	killerID, killer := spawnPlayerAt(t, w, ExpShareRadius+5, 0)
+	_, near := spawnPlayerAt(t, w, 1, 0)
+
+	GrantKillExp(w, world.V(0, 0), killerID, 10)
+	if killer.Exp != 10 {
+		t.Errorf("半径外的击杀者 Exp = %d，期望 10（击杀者不受半径限制）", killer.Exp)
+	}
+	if near.Exp != 3 {
+		t.Errorf("死亡点附近队友 Exp = %d，期望 3", near.Exp)
+	}
+}
+
+func TestGrantKillExpWithoutKillerFallsBackToEvenSplit(t *testing.T) {
+	// 没有有效击杀者（Src 无效/击杀者已倒地）：退化为平分，不能谁都不涨。
 	w := newSystemsWorld(t, 1)
 	_, a := spawnPlayerAt(t, w, 0, 0)
 	_, b := spawnPlayerAt(t, w, 3, 0)
 
-	GrantKillExp(w, world.V(0, 0), 8)
+	GrantKillExp(w, world.V(0, 0), world.InvalidID, 8)
 	if a.Exp != 4 || b.Exp != 4 {
-		t.Errorf("两人分 8 点经验，实际 %d / %d，期望 4 / 4", a.Exp, b.Exp)
+		t.Errorf("无击杀者时两人分 8 点，实际 %d / %d，期望 4 / 4", a.Exp, b.Exp)
 	}
+}
 
-	// 平分除不尽时每人至少 1 点：1 点经验分给 3 人不能变成「谁都不涨」。
-	w2 := newSystemsWorld(t, 2)
-	_, c := spawnPlayerAt(t, w2, 0, 0)
-	_, d := spawnPlayerAt(t, w2, 1, 0)
-	_, e := spawnPlayerAt(t, w2, 2, 0)
-	GrantKillExp(w2, world.V(0, 0), 1)
-	if c.Exp == 0 || d.Exp == 0 || e.Exp == 0 {
-		t.Errorf("1 点经验分 3 人，实际 %d / %d / %d，期望每人至少 1",
-			c.Exp, d.Exp, e.Exp)
+func TestGrantKillExpTinyExpGivesNoNearbyShare(t *testing.T) {
+	// baseExp=3 时 30% 取整为 0：不硬塞 1 点。硬塞会让 4 人队打
+	// 低经验怪各自涨得比打手还快。
+	w := newSystemsWorld(t, 1)
+	killerID, killer := spawnPlayerAt(t, w, 0, 0)
+	_, mate := spawnPlayerAt(t, w, 5, 0)
+
+	GrantKillExp(w, world.V(0, 0), killerID, 3)
+	if killer.Exp != 3 {
+		t.Errorf("击杀者 Exp = %d，期望 3", killer.Exp)
+	}
+	if mate.Exp != 0 {
+		t.Errorf("队友 Exp = %d，期望 0（3 × 30%% 取整为 0）", mate.Exp)
 	}
 }
 

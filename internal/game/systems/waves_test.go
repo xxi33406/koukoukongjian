@@ -42,51 +42,77 @@ func playerAtHub(t *testing.T, w *world.World, hubIdx int) world.EntityID {
 	return id
 }
 
-func TestWaveTriggersOnEnterAndSpawns(t *testing.T) {
+// TestWaveSpawnsAllHubsOnFirstTick 钉住 M4 规格修订：怪物开局就刷，不等
+// 玩家进圈。所有据点在同一次 UpdateWaves 里全部开波——一个玩家都没有的
+// 世界里也照刷，这正是「怪是地图的一部分」的意思。
+func TestWaveSpawnsAllHubsOnFirstTick(t *testing.T) {
 	w, cfg := newWaveWorld(t)
-	playerAtHub(t, w, 1)
-	hub := &w.Hubs[1]
 
-	if hub.State != world.HubIdle {
-		t.Fatalf("进圈前应 Idle，实际 %v", hub.State)
+	if w.Players.Len() != 0 {
+		t.Fatalf("前提失效：本用例要求世界无玩家，实际 %d 个", w.Players.Len())
 	}
 
 	UpdateWaves(w)
-	if hub.State != world.HubFighting {
-		t.Fatalf("进圈后应 Fighting，实际 %v", hub.State)
-	}
-	if hub.WaveN != cfg.Waves.MonstersPerWave {
-		t.Errorf("第一波应刷 %d 只，实际 %d", cfg.Waves.MonstersPerWave, hub.WaveN)
-	}
-	// 怪物必须真的进了池子，且位置在据点附近。
-	alive := 0
-	w.Monsters.Each(func(_ world.EntityID, m *world.MonsterState) bool {
-		alive++
-		if m.Pos.Sub(hub.Center).Len() > hub.RadiusM*0.8 {
-			t.Errorf("刷怪点距据点中心过远：%v（上限 %.1f）", m.Pos, hub.RadiusM*0.8)
+	for i := range w.Hubs {
+		hub := &w.Hubs[i]
+		if hub.State != world.HubFighting {
+			t.Errorf("据点 %d 开局应 Fighting（不进圈也刷），实际 %v", i, hub.State)
 		}
-		return true
-	})
-	if alive != cfg.Waves.MonstersPerWave {
-		t.Errorf("池中怪 %d != %d", alive, cfg.Waves.MonstersPerWave)
+		if hub.Wave != 1 {
+			t.Errorf("据点 %d 开局应为第 1 波，实际 %d", i, hub.Wave)
+		}
+		if hub.WaveN != cfg.Waves.MonstersPerWave {
+			t.Errorf("据点 %d 第一波应刷 %d 只，实际 %d",
+				i, cfg.Waves.MonstersPerWave, hub.WaveN)
+		}
+	}
+
+	// 怪物必须真的进了池子：5 个据点 × MonstersPerWave。
+	want := len(w.Hubs) * cfg.Waves.MonstersPerWave
+	if got := w.Monsters.Len(); got != want {
+		t.Errorf("池中怪 %d，期望 %d（%d 据点 × %d 只）",
+			got, want, len(w.Hubs), cfg.Waves.MonstersPerWave)
 	}
 }
 
-// 硬间隔的负路径（Task 7 审查 I-1）：开波后杀光但不推时钟，波次必须原地
-// 保持 Fighting 且 Wave 不动。mutation 实验删掉 waves.go 的 NextAt 判定后
-// 老用例仍全绿（它们每轮都推 w.Tick=hub.NextAt，阻塞分支从未走过负路径），
-// 这条用例补上缺口。
+// TestWaveSpawnPointsStayNearTheirHub 刷出的怪必须落在自己据点的圆环内。
+//
+// 这条与「全部据点同时刷」是两个独立的失效模式：撒点算错（比如用了全局
+// 随机坐标而不是据点中心 + 极坐标）时据点状态仍会正确推进，只有位置是错的。
+// 位置错在 M4 之后才致命——怪物 AI 会追人，出生点离得远只表现为「怪来得慢」，
+// 很难看出是 bug。
+func TestWaveSpawnPointsStayNearTheirHub(t *testing.T) {
+	w, cfg := newWaveWorld(t)
+	UpdateWaves(w)
+
+	for i := range w.Hubs {
+		hub := &w.Hubs[i]
+		for j := 0; j < hub.WaveN; j++ {
+			m := w.Monsters.Get(hub.WaveIDs[j])
+			if m == nil {
+				t.Fatalf("据点 %d 的 WaveIDs[%d] 槽位已失效", i, j)
+			}
+			// 撒点半径 0.6R × (0.8~1.2) = [0.48R, 0.72R]，留到 0.8R 的余量。
+			if d := m.Pos.Sub(hub.Center).Len(); d > hub.RadiusM*0.8 {
+				t.Errorf("据点 %d 的怪距中心 %.2f m，超过上限 %.2f m",
+					i, d, hub.RadiusM*0.8)
+			}
+		}
+	}
+	_ = cfg
+}
+
+// TestWaveHoldsBetweenWavesWithoutClockAdvance 硬间隔的负路径。
+// 开波后杀光但不推时钟，波次必须原地保持 Fighting 且 Wave 不动。
+// mutation 实验删掉 waves.go 的 NextAt 判定后老用例仍全绿（它们每轮都推
+// w.Tick=hub.NextAt，阻塞分支从未走过负路径），这条用例补上缺口。
 func TestWaveHoldsBetweenWavesWithoutClockAdvance(t *testing.T) {
 	w, _ := newWaveWorld(t)
-	playerAtHub(t, w, 4)
 	hub := &w.Hubs[4]
 	UpdateWaves(w) // 第 1 波刷出，NextAt 已定
 
-	w.Monsters.Each(func(_ world.EntityID, m *world.MonsterState) bool {
-		m.HP = 0
-		m.Flags |= world.MonsterFlagDead // 杀光但不推时钟
-		return true
-	})
+	// 只杀本据点的怪：其他据点也刷了，全杀会顺带推进它们，与用例无关。
+	killHubWave(w, hub)
 	UpdateWaves(w)
 	if hub.State != world.HubFighting {
 		t.Fatalf("间隔未到应保持 Fighting，实际 %v", hub.State)
@@ -96,26 +122,27 @@ func TestWaveHoldsBetweenWavesWithoutClockAdvance(t *testing.T) {
 	}
 }
 
+// killHubWave 把某据点当前波的怪标记为死（M4 起死亡态是 HP 归零 +
+// MonsterFlagDead 置位，与 Reap 的判据同源）。
+func killHubWave(w *world.World, hub *world.Hub) {
+	for i := 0; i < hub.WaveN; i++ {
+		if m := w.Monsters.Get(hub.WaveIDs[i]); m != nil {
+			m.HP = 0
+			m.Flags |= world.MonsterFlagDead
+		}
+	}
+}
+
 func TestWaveClearAdvancesThenCompletes(t *testing.T) {
 	w, cfg := newWaveWorld(t)
-	playerAtHub(t, w, 2)
 	hub := &w.Hubs[2]
 	UpdateWaves(w) // 第 1 波刷出
 
 	// 杀光当前波 → 时钟推到 NextAt → UpdateWaves 推进到第 2 波。
 	// InterWaveDelayS 是硬间隔：startWave 刷出本波时即定下下一波最早可刷
-	// tick，不推时钟间隔未到、波不会推进。计划测试骨架漏了这步，按假时钟
-	// 约定（AGENTS §2.7）直接改 w.Tick，不睡真实时间。
-	killWave := func() {
-		w.Monsters.Each(func(_ world.EntityID, m *world.MonsterState) bool {
-			// Reap 在 Task 9/10 才接线，直接改字段模拟击杀：
-			// M4 起死亡态是 HP 归零 + MonsterFlagDead 置位。
-			m.HP = 0
-			m.Flags |= world.MonsterFlagDead
-			return true
-		})
-	}
-	killWave()
+	// tick，不推时钟间隔未到、波不会推进。按假时钟约定（AGENTS §2.7）直接
+	// 改 w.Tick，不睡真实时间。
+	killHubWave(w, hub)
 	w.Tick = hub.NextAt
 	UpdateWaves(w)
 	if hub.Wave != 2 {
@@ -127,7 +154,7 @@ func TestWaveClearAdvancesThenCompletes(t *testing.T) {
 
 	// 连清到最后一波完成：每轮杀光 + 推时钟 + 推进，WavesPerHub 轮后 Cleared。
 	for i := 0; i < cfg.Waves.WavesPerHub; i++ {
-		killWave()
+		killHubWave(w, hub)
 		w.Tick = hub.NextAt
 		UpdateWaves(w)
 	}
@@ -154,15 +181,16 @@ func TestWaveClearAdvancesThenCompletes(t *testing.T) {
 // 结束（面板上血是满的，逻辑上却是尸体）。
 func TestWaveAliveIgnoresHealedButDeadMonster(t *testing.T) {
 	w, _ := newWaveWorld(t)
-	playerAtHub(t, w, 1)
 	hub := &w.Hubs[1]
 	UpdateWaves(w) // 第 1 波刷出
 
-	w.Monsters.Each(func(_ world.EntityID, m *world.MonsterState) bool {
-		m.HP = 50                        // 治疗回满血
-		m.Flags |= world.MonsterFlagDead // 但标志还在：是尸体
-		return true
-	})
+	// 只动本据点的怪：所有据点同 tick 开波，全池遍历会连别的据点一起改。
+	for i := 0; i < hub.WaveN; i++ {
+		if m := w.Monsters.Get(hub.WaveIDs[i]); m != nil {
+			m.HP = 50                        // 治疗回满血
+			m.Flags |= world.MonsterFlagDead // 但标志还在：是尸体
+		}
+	}
 	if n := waveAlive(w, hub); n != 0 {
 		t.Fatalf("waveAlive = %d，期望 0：HP 回满但标志为死的怪不该算活着", n)
 	}
@@ -174,30 +202,9 @@ func TestWaveAliveIgnoresHealedButDeadMonster(t *testing.T) {
 	}
 }
 
-func TestWaveOnlyTriggersInsideRadius(t *testing.T) {
-	w, cfg := newWaveWorld(t)
-	// 玩家站在据点外：3 号据点右侧 2 倍半径处（10 m > 5 m 触发半径），
-	// 且远离其余据点，不会误触发。
-	id, _ := w.Players.Spawn()
-	p := w.Players.Get(id)
-	far := w.Hubs[3].Center.Add(world.V(w.Hubs[3].RadiusM*2, 0))
-	p.Pos = far
-	p.HP, p.MaxHP = 100, 100
-	p.State = world.PlayerAlive
-
-	UpdateWaves(w)
-	if w.Hubs[3].State != world.HubIdle {
-		t.Errorf("玩家不在圈内不应开波，实际 %v", w.Hubs[3].State)
-	}
-	if w.Hubs[4].State != world.HubIdle {
-		t.Errorf("远处据点不应被误触发，实际 %v", w.Hubs[4].State)
-	}
-	_ = cfg
-}
-
 func TestWaveIDsTrackedForKillDetection(t *testing.T) {
 	w, cfg := newWaveWorld(t)
-	playerAtHub(t, w, 4)
+	playerAtHub(t, w, 4) // 玩家位置已不影响开波，留着是为了体现"有玩家时也一样"
 	hub := &w.Hubs[4]
 	UpdateWaves(w)
 	if hub.WaveN == 0 {

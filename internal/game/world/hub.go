@@ -11,11 +11,17 @@ type Hub struct {
 	WaveN   int          // 当前波实际怪数
 }
 
-// HubState 是据点波次的运行时状态（spec：进圈开波 → 清波 → 下一波 → 完成）。
+// HubState 是据点波次的运行时状态。
+//
+// M4 规格修订：怪物开局就刷在地图上，「玩家进圈」不再是开波条件。据点仍
+// 是波次竞技场（一波清完、间隔后再刷下一波），但第一波的开刷时机是关卡
+// 开始的那一刻。所以 HubIdle 不再表示「没人在圈里」，只表示「这一据点的
+// 第一波还没刷出来」——它只作为初始值存在，第一次 UpdateWaves 就会把它
+// 推走。
 type HubState uint8
 
 const (
-	HubIdle     HubState = iota // 玩家未进入
+	HubIdle     HubState = iota // 初始态：这一据点的第一波尚未刷出
 	HubFighting                 // 波次进行中
 	HubCleared                  // 全部波清完
 )

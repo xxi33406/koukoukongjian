@@ -575,7 +575,8 @@ func (r *Room) grantKillExp(inc []world.DamageEvent) {
 		if m == nil {
 			continue // 目标不是怪，或已被别的路径回收
 		}
-		r.pendingLevelUps = append(r.pendingLevelUps, systems.GrantKillExp(w, m.Pos, baseExp)...)
+		r.pendingLevelUps = append(r.pendingLevelUps,
+			systems.GrantKillExp(w, m.Pos, ev.Src, baseExp)...)
 	}
 }
 
