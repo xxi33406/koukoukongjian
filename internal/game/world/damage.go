@@ -98,7 +98,11 @@ func (w *World) resolvePlayerDamage(ev DamageEvent, src, dst EntityID, dmg float
 	if p == nil {
 		return ev // 玩家池里没有这个索引：id 失效
 	}
-	if p.HP <= 0 {
+	// 判据是 State 而不是 HP<=0：M5 起死亡会立刻置 PlayerGhost，鬼魂
+	// 不该再吃伤害。用 HP<=0 判会有一个漏：复活中（HP 还没补回来但
+	// State 已经改回 Alive）的那一帧会被当成尸体，而治疗/复活恰好
+	// 就是这个项目里把 HP 从 0 拉回来的两条路径。
+	if p.State != PlayerAlive {
 		return ev
 	}
 
@@ -137,8 +141,16 @@ func (w *World) resolvePlayerDamage(ev DamageEvent, src, dst EntityID, dmg float
 	p.Flags &^= PlayerFlagBusy
 	p.InventoryOpenAt = 0
 
+	// 致死：把状态切到鬼魂。这一步是 M5 的核心——只 p.HP = 0 不改
+	// State 的话，玩家在全仓 9 处 "State != PlayerAlive" 的判据里
+	// 仍然是活人，能继续走、开火、放技能、捡东西，怪物也还在追他。
+	//
+	// 判据留在"扣血之后"的既有顺序上（p.HP 已在上面减过 dmg），而不是
+	// 计划示意里的"先比较再减"：扣减在前让 DamageTaken 的累加与
+	// creditSource 的分账都不必挪位置，而 Kill() 会自己把 HP 置 0，
+	// 中间那个短暂的负值活不过本函数，不会被任何读取方看见。
 	if p.HP <= 0 {
-		p.HP = 0
+		p.Kill()
 		ev.IsKill = true
 	}
 	ev.Amount = dmg

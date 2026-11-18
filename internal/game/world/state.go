@@ -143,6 +143,14 @@ type PlayerState struct {
 	// 当前 tick + 1，实际永远不会算出 0，所以两者不会撞车。
 	InventoryOpenAt uint32
 
+	// ReviveAt 是祭坛复活引导的结束 tick（0 表示没在引导）。
+	//
+	// 与 InventoryOpenAt 同款：存 tick 号而不是秒数，因为推进与打断都在
+	// 手握 *World 的地方（room.tickRevives），tick 号不受浮点漂移影响。
+	// 两个字段分开而不是复用一个「引导中」字段：开背包与复活可以同时被
+	// 试图发起，用同一字段会让后发起的覆盖前一个而没有报错。
+	ReviveAt uint32
+
 	// —— 网络校正 ——
 	LastAckedInput uint16
 	Ping           uint32 // 平滑后的 RTT，毫秒
@@ -212,6 +220,44 @@ const (
 
 // Has 报告标记位是否置位。
 func (f PlayerFlags) Has(bit PlayerFlags) bool { return f&bit != 0 }
+
+// Kill 把玩家置为鬼魂并清掉一切依赖「活着」的状态。
+//
+// 为什么收进 world 而不让 room 自己清：room 拿得到 PlayerState，但它清哪些
+// 字段是个与伤害结算强耦合的规则——M4 的受击打断已经因为「world 不能
+// import systems」而在两处写镜像（damage.go:137 与 systems.InterruptBusy），
+// 再加第三处镜像就一定会漏。死亡清零只在"血量归零"这一个时刻发生，
+// 而那是 world 包自己的事（ResolveDamage 在这里），所以放在这里最省。
+//
+// 不清 SkillCooldown：它是"技能什么时候能再用"，与生死无关。清零等于
+// 用死亡刷新技能，会被"冲进怪堆自杀放爆发"滥用。
+// 不清 SkillActive/SkillPassive/ItemSlots：背包是玩家的东西，复活还要用。
+// 不清 Carrier：鬼魂手里的血瓶（M5 搬运）还要交给活人，那是它存在的意义。
+func (p *PlayerState) Kill() {
+	p.HP = 0
+	p.State = PlayerGhost
+
+	// 移动与开火：不清 Vel 会让鬼魂带着上一帧速度滑一段。
+	p.Vel = Vec2{}
+	p.MoveIntent = Vec2{}
+	p.FireCooldown = 0
+	p.PrevAttackHeld = false
+
+	// 所有引导一律打断：鬼魂不能继续开背包，也不能继承别人的复活引导。
+	p.InventoryOpenAt = 0
+	p.ReviveAt = 0
+	p.Flags &^= PlayerFlagBusy
+
+	// 限时增益全部失效。留着会出现"死了反而更强"：无敌跑图、
+	// 冲刺速度的鬼魂比活人还快，拴绳每 tick 都触发。
+	p.InvulnLeft = 0
+	p.SpeedBuffLeft = 0
+	p.SpeedBuffMul = 0
+
+	// PlayerFlagInvulnerable 与 Busy 一起清（Flags 整块清零最省心：
+	// 鬼魂不受击的判据在 ResolveDamage 里按 State 判，不靠 flag）。
+	p.Flags = 0
+}
 
 // MonsterState 是一只怪物的完整状态。
 type MonsterState struct {
