@@ -27,6 +27,17 @@ var (
 	// 它不是"玩家超时"，而是"房间没有响应"——正常路径下 tick 50ms 一次，
 	// 请求在下一个 tick 就被消费。
 	ErrChoiceTimeout = errors.New("room: 选择请求处理超时")
+	// ErrInteractKind 表示交互请求的 kind 不在已知取值里。
+	//
+	// 单独成一个错误而不是复用 errNoPeer：bridge 日志要区分"客户端发了
+	// 服务端不认识的交互"与"这个座位没有活着的实体"，前者是版本不一致，
+	// 后者是玩家已经死了，处理方式完全不同。
+	ErrInteractKind = errors.New("room: 未知的交互类型")
+	// ErrInteractTimeout 表示交互请求排队后迟迟没被 tick 循环处理。
+	//
+	// 与 ErrChoiceTimeout 同源：tick 循环卡死时不能让 bridge 的会话读
+	// goroutine 永久粘在这个调用上。
+	ErrInteractTimeout = errors.New("room: 交互请求处理超时")
 )
 
 // InputCommand 是一次玩家输入。

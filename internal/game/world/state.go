@@ -129,6 +129,20 @@ type PlayerState struct {
 	// 取到的倍率该陪着这次效果走完。
 	SpeedBuffMul float64
 
+	// InventoryOpenAt 是开背包引导的**结束 tick 号**，0 表示当前没在引导。
+	//
+	// 与上面几个限时效果用秒数相反，这里刻意用 tick 号。判据不是风格而是
+	// 签名：SpeedBuffLeft/InvulnLeft 要在 Integrate 与 ResolveDamage 里读，
+	// 那两个函数拿不到 *World、读不到 w.Tick，所以只能存秒数；而开背包
+	// 的推进与打断都发生在手握 *World 的地方（room 的 tick 循环、
+	// ResolveDamage 的玩家分支），随时能拿 w.Tick 比。存 tick 号的好处是
+	// 「还剩几个 tick」精确可数，不受浮点累减的漂移影响——引导是有明确
+	// 终点的动作，玩家会盯着它结束，累计误差会变成"有时早一帧有时晚一帧"。
+	//
+	// 0 兼作"未在引导"的哨兵：tick 号从 0 起，但引导的结束 tick 至少是
+	// 当前 tick + 1，实际永远不会算出 0，所以两者不会撞车。
+	InventoryOpenAt uint32
+
 	// —— 网络校正 ——
 	LastAckedInput uint16
 	Ping           uint32 // 平滑后的 RTT，毫秒

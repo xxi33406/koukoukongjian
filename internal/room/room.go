@@ -74,6 +74,15 @@ type Room struct {
 	// 技能"这种查不出的偶发。与 inputs/joins 同款：网络侧投递，tick 里
 	// 非阻塞消费。
 	choices chan choiceRequest
+	// interacts 是等待处理的交互请求（开背包 / 拾取最近）。
+	//
+	// 与 choices 同款约束与同款理由：Interact 由 bridge 的网络 goroutine
+	// 调用，而 World 归 tick goroutine 独占（AGENTS.md §2.5）。开背包要
+	// 写 PlayerState.InventoryOpenAt 与 Flags，直接写就是跨 goroutine 写。
+	//
+	// 容量 MaxSlots×4 而非 ×8：交互是玩家按键触发（不是每帧的输入），
+	// 每人每秒最多几次；留 4 秒余量已经远超实际，满了丢弃不会积累。
+	interacts chan interactRequest
 	// reliable 是房间要经可靠通道下发的消息（技能候选这类漏了就没法补救
 	// 的消息）。room 不 import netx（分层硬约束），所以这里只出一个通道，
 	// 由 bridge 那边泵到会话的可靠通道上。
@@ -136,6 +145,18 @@ type choiceRequest struct {
 	reply chan error
 }
 
+// interactRequest 是请求处理一次玩家交互（开背包 / 拾取最近）。
+//
+// kind 直接用协议里的数值（proto.Interact.Kind：1=拾取最近，2=开背包），
+// 不在这里另造一套枚举：两套枚举的映射表迟早会漏一项，而症状是"某个
+// 交互键没反应"。校验放在 Interact 入口，其余值直接拒绝（proto 注释已经
+// 写明"其余值服务端忽略"，客户端未来版本加的新 kind 不该在这里 panic）。
+type interactRequest struct {
+	slot  int
+	kind  int
+	reply chan error
+}
+
 // ReliableMessage 是房间要经可靠通道下发的一条消息。
 //
 // Slot 是收件座位号；Data 是已编码的 Envelope。room 不碰会话，bridge 按
@@ -190,6 +211,7 @@ func New(cfg *config.Config, log *slog.Logger, opts Options) *Room {
 		inputs:       make(chan peerInput, MaxSlots*32),
 		leaves:       make(chan leaveRequest, MaxSlots),
 		choices:      make(chan choiceRequest, MaxSlots*4),
+		interacts:    make(chan interactRequest, MaxSlots*4),
 		reliable:     make(chan ReliableMessage, MaxSlots*8),
 		done:         make(chan struct{}),
 	}
@@ -384,6 +406,7 @@ func (r *Room) tick() {
 	r.drainLeaves()
 	r.drainInputs()
 	r.drainChoices()
+	r.drainInteracts()
 
 	// 1. 重建空间索引（每 tick 一次，不是每子步）。
 	w.Grid.Rebuild(w.Monsters, w.Bullets, w.Players)
@@ -426,6 +449,25 @@ func (r *Room) tick() {
 	//     冷却，接进子步会让 SubSteps=3 时以三倍速走完，表现为"技能冷却
 	//     只要三分之一时间"——手感问题，不会报错，极难定位。
 	r.tickBuffs()
+
+	// 3.05 开背包引导推进（M4 Task 10）：每 tick 一次，与 tickBuffs 同款
+	//      理由（引导的终点是一个 tick 号，接进子步会被判定三次）。
+	//      放在受击打断之后的自然位置：本 tick 子步里挨打的玩家，Busy 位
+	//      已在 resolvePlayerDamage 里被清掉，这一行就不会再把引导推完。
+	r.tickInventory()
+
+	// 3.06 掉落物结算（M4 Task 9 接线）：每 tick 一次——这不是选择，
+	//      UpdatePickups 内部用 pickupDeltaSeconds(w) 扣寿命，那个 dt 是
+	//      **一个 tick** 的时长（1/TickRate）。放进子步循环会以 SubSteps=3
+	//      倍速消耗寿命，症状是"地上掉落物总是早三分之一时间消失"，而
+	//      配置里写的 30 秒看起来完全正确。
+	//      相对玩家位置：必须排在子步移动之后，否则用的是上一 tick 的位置，
+	//      高速移动时会出现"明明跑过去了却没捡到"。
+	//      返回的事件结构同 DamageEvent（Dst=消失的 ID、Amount=0），直接
+	//      追加进 r.events，与伤害事件走同一条上报路径。
+	if evs := systems.UpdatePickups(r.World); len(evs) > 0 {
+		r.events = append(r.events, evs...)
+	}
 
 	// 3.1 升级结算：本 tick 子步里升级的玩家在这里统一发候选、开无敌窗口。
 	//     攒到 tick 级处理而不是在 subStep 里当场做，理由见 pendingLevelUps
@@ -749,10 +791,14 @@ func (r *Room) applyChoiceLocked(p *peer, index int) error {
 	}
 
 	s := p.pendingChoices[index]
-	equipSkill(ent, s)
-	// 装上新被动必须立刻重算倍率与 HP 上限，否则被动要等到下一次升级
-	// 或复活才生效——表现是"选了强健体魄但血条没变"，玩家会以为没选上。
-	systems.RecomputeDerived(ent)
+	// 装槽与重算派生都由 systems.TryEquipSkill 收口（M4 Task 10 统一）：
+	// 它按技能种类选槽组、装第一个空槽、两槽满替换[1]，**并且**在返回前
+	// 调一次 RecomputeDerived。所以这里不能再跟一行 RecomputeDerived——
+	// 那不是"多算一次也无害"，而是重复调用的地方一旦日后被改成增量更新
+	// （像 SpeedBuffMul 那样按次加减），重复就会翻倍。装上新被动必须
+	// 立刻生效这一点由 TryEquipSkill 自己的契约保证（pickup.go 的注释写明
+	// 捡技能与这里共用同一语义，两条路径不能有两种生效时机）。
+	systems.TryEquipSkill(ent, s.ID)
 
 	r.clearChoiceWindow(p)
 	r.log.Debug("技能选择已应用",
@@ -775,26 +821,6 @@ func (r *Room) clearChoiceWindow(p *peer) {
 		// 字段，不会被这里误清。
 		ent.Flags &^= world.PlayerFlagInvulnerable
 	}
-}
-
-// equipSkill 把技能装进第一个空槽；两槽都满时替换第二个槽位。
-//
-// M4 的取舍：没有"遗忘/替换"的界面，也没定 UI 交互（Task 10 之后才谈
-// 背包）。两槽已满时替换[1] 而不是拒绝，理由是拒绝会让玩家"升了级却
-// 什么都没有"，而替换至少让构筑能持续演进，成本只是丢掉之前那个最后
-// 装上的技能——玩家能立刻从下一次候选里看出来。
-func equipSkill(p *world.PlayerState, s build.Skill) {
-	slots := &p.SkillPassive
-	if s.Kind == build.SkillKindActive {
-		slots = &p.SkillActive
-	}
-	for i := range slots {
-		if slots[i] == 0 {
-			slots[i] = s.ID
-			return
-		}
-	}
-	slots[1] = s.ID
 }
 
 // assignedSkillIDs 收集玩家已占用的技能 ID：槽位里的 + 还在候选里没选的。
@@ -896,6 +922,110 @@ func (r *Room) ApplyChoice(slot, choiceIndex int) error {
 		// 调用上，那个会话就再也不处理任何消息——连断线都发现不了。
 		return ErrChoiceTimeout
 	}
+}
+
+// 交互请求的 kind 值，与 internal/proto/game.proto 的 Interact 注释一一对应。
+const (
+	// InteractKindPickupNearest 是"拾取最近"（kind=1）。
+	InteractKindPickupNearest = 1
+	// InteractKindOpenInventory 是"开背包"（kind=2）。
+	InteractKindOpenInventory = 2
+)
+
+// Interact 处理一次玩家交互。
+//
+// 与 ApplyChoice 同款：由 bridge 在 tick goroutine 之外的 goroutine 调用，
+// 所以必须走 channel 投递，绝不能直接改 r.World（AGENTS.md §2.5）。
+//
+// 回执同样带超时上限，理由与 ApplyChoice 完全一样：一次卡死的 tick 循环
+// 不能把某个会话的读 goroutine 永久粘住。
+func (r *Room) Interact(slot, kind int) error {
+	if r.stopped.Load() {
+		return ErrRoomStopped
+	}
+	// kind 在入口就校验，不进队列。让不认识的值排到 tick 循环里再被拒，
+	// 等于用一次世界结算的机会去发现"客户端发了个新版本才有的 kind"，
+	// 而那种情况在日志里与"内部逻辑出错"长得一样。
+	if kind != InteractKindPickupNearest && kind != InteractKindOpenInventory {
+		return ErrInteractKind
+	}
+	req := interactRequest{
+		slot: slot,
+		kind: kind,
+		// 缓冲 1 的理由同 choiceRequest：tick 侧投回执是非阻塞的。
+		reply: make(chan error, 1),
+	}
+	select {
+	case r.interacts <- req:
+	case <-r.done:
+		return ErrRoomStopped
+	}
+	select {
+	case err := <-req.reply:
+		return err
+	case <-r.done:
+		return ErrRoomStopped
+	case <-time.After(choiceReplyTimeout):
+		return ErrInteractTimeout
+	}
+}
+
+// applyInteractLocked 在 tick goroutine 里应用一次交互。
+//
+// 名字带 Locked 与 applyChoiceLocked 对齐：它改 PlayerState，只能在 tick
+// goroutine 里调用。
+func (r *Room) applyInteractLocked(p *peer, kind int) error {
+	ent := r.World.Players.Get(p.id)
+	if ent == nil || ent.State != world.PlayerAlive {
+		// 死人不能开背包，也不能拾取。返回错误而不是悄悄忽略：客户端在
+		// 死亡时还发交互，说明它对自身状态的认知与服务端不一致。
+		return errNoPeer
+	}
+
+	switch kind {
+	case InteractKindOpenInventory:
+		// 引导时长按 tick 率折算，放在这里算而不是缓存进 Room：它只在
+		// 玩家按下的那一瞬间用一次，缓存反而多一份需要与 cfg 同步的状态。
+		systems.BeginOpenInventory(ent, r.World.Tick+systems.OpenInventoryTicks(float64(r.cfg.Server.TickRate)))
+		r.log.Debug("开始开背包引导", "slot", p.slot,
+			"end_at", ent.InventoryOpenAt)
+		return nil
+
+	case InteractKindPickupNearest:
+		// M4 的拾取是**自动**的：systems.UpdatePickups 每 tick 扫一遍掉落物，
+		// 谁的半径内有就归谁（Task 9 的规则），手动再拾取一次是纯冗余。
+		//
+		// 刻意不在这里实现"立刻尝试拾取最近的一个"：那会是第二条修改世界
+		// 的路径（与 UpdatePickups 各调一次 applyPickup），两条路径的半径
+		// 判定、Carrier 规则、满槽丢弃规则都得保持同步，日后改一处漏一处
+		// 的症状是"走过去能捡、按 E 捡不到"。更实际的是它几乎永远是 no-op
+		// ——玩家能站在掉落物上按 E 的时候，自动拾取早在这一 tick 之前就
+		// 把它捡走了。所以这里如实打一条 Debug 并成功返回，等 M5 出现
+		// 需要"主动取舍"的掉落（例如鬼魂搬运血瓶）再给它语义。
+		r.log.Debug("交互：拾取最近（M4 为自动拾取，手动语义留待 M5）",
+			"slot", p.slot)
+		return nil
+	}
+	return ErrInteractKind
+}
+
+// tickInventory 推进所有玩家的开背包引导。
+//
+// 在 tick 里调一次（不是子步），与 tickBuffs 同款理由：引导的结束时刻是
+// 一个 tick 号，若接进 60Hz 的子步，同一个 tick 号会被判定三次，引导在
+// 3 个子步里连着"完成"（第一次清位后后两次是 no-op，但这意味着实际时长短
+// 于配置），而且玩家看到的进度会随 SubSteps 变化。
+func (r *Room) tickInventory() {
+	now := r.World.Tick
+	r.World.Players.Each(func(_ world.EntityID, p *world.PlayerState) bool {
+		if systems.TickOpenInventory(p, now) {
+			// 完成时不发消息：背包内容（技能槽/道具槽）本来就随快照或
+			// Inventory 消息走，M4 还没有"背包已打开"的客户端状态机。
+			// 这条日志是给联调用看的，不打会以为引导没走完。
+			r.log.Debug("开背包引导完成")
+		}
+		return true
+	})
 }
 
 // fire 让每个在座玩家按当前按键尝试开火。

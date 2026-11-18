@@ -122,6 +122,21 @@ func (w *World) resolvePlayerDamage(ev DamageEvent, src, dst EntityID, dmg float
 	p.HP -= dmg
 	// 承受伤害参与贡献折算（spec L134：贡献 = 伤害 + 0.5×承受）
 	p.DamageTaken += dmg
+
+	// 受击打断开背包引导（spec L44「开背包需数秒引导，受击打断」）。
+	//
+	// 为什么内联在这里、而不是调 systems.InterruptBusy：world 是叶子包，
+	// 不能 import systems（分层纪律 AGENTS.md §2.4，systems 反过来依赖
+	// world，成环）。而打断必须与伤害结算在同一处完成——若留给 room 每
+	// tick 比较"血量比上一 tick 少了没有"，漏一帧就少一次打断，且要被
+	// 动的减伤/无敌混淆（血量没变不等于没挨打）。所以这两行是
+	// systems.InterruptBusy 的镜像，两边必须同时改。
+	//
+	// 位置在无敌判定之后、扣血之后：无敌挡掉的伤害函数已经 return 了，
+	// 走不到这里，就不会出现"免疫了一次伤害却被打断引导"的怪事。
+	p.Flags &^= PlayerFlagBusy
+	p.InventoryOpenAt = 0
+
 	if p.HP <= 0 {
 		p.HP = 0
 		ev.IsKill = true

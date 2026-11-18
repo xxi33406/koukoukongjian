@@ -54,6 +54,26 @@ type netBridge struct {
 	// 玩家的输入——都会跟着停。所以这里只做非阻塞投递，由一个专门的
 	// worker 串行应用。
 	choices chan choiceApply
+
+	// interacts 是待应用的交互请求队列（开背包 / 拾取最近）。
+	//
+	// 为什么不复用 choices 那条队列：两者虽然都是"网络 goroutine 投递、
+	// 固定 worker 串行应用"，但耦合在一个队列上会互相阻塞——worker 在
+	// 处理一次交互时若撞上 tick 卡死要等满 1 秒（room.Interact 的超时
+	// 上限），同一队列里排着的技能选择就跟着等 1 秒，而技能选择窗口
+	// 本来就只有几秒。分开两条队列则是各等各的，一个房间的卡顿不会
+	// 顺带冻结另一个玩家的升级流程。
+	//
+	// 代价是多一个 goroutine 与一条队列，两者都常驻且容量个位数，
+	// 与它换来的故障隔离相比可以接受。
+	interacts chan interactApply
+}
+
+// interactApply 是一条待应用的交互请求。
+type interactApply struct {
+	session *netx.Session
+	slot    int
+	kind    int
 }
 
 // choiceApply 是一条待应用的技能选择。
@@ -109,6 +129,8 @@ func newNetBridge(ctx context.Context, r *room.Room, cfg *config.Config, log *sl
 		ctx:     ctx,
 		peers:   make(map[uint64]*clientPeer),
 		choices: make(chan choiceApply, choiceQueueSize),
+		// 交互队列容量与技能选择同量级：交互同样是按键触发的低频操作。
+		interacts: make(chan interactApply, choiceQueueSize),
 	}
 	// 可靠下行的泵：房间只把"要发什么"投进通道，找会话是网桥的事
 	// （room 不 import netx，AGENTS.md §2.4）。放在构造函数里起，与
@@ -117,6 +139,8 @@ func newNetBridge(ctx context.Context, r *room.Room, cfg *config.Config, log *sl
 	go b.pumpReliable()
 	b.wg.Add(1)
 	go b.pumpChoices()
+	b.wg.Add(1)
+	go b.pumpInteracts()
 	return b
 }
 
@@ -164,11 +188,13 @@ func (b *netBridge) OnReliable(s *netx.Session, payload []byte) {
 		// 和选 B 是不同的事实，不能只保留最后一条。
 		b.handleChooseSkill(s, body.ChooseSkill)
 	case *proto.Envelope_Interact:
-		// M4 只留汇合点：拾取物在 Task 9、背包在 Task 10，那时这里再
-		// 接 room 的交互队列。现在不静默丢弃，打 Debug 便于联调时看到
-		// 客户端已经在按了。
-		b.log.Debug("交互请求（M4 尚未接线）",
-			"session", s.ID(), "kind", body.Interact.GetKind())
+		// M4 Task 10 接线：开背包（kind=2）走 room 的交互队列，由 tick
+		// goroutine 去写 PlayerState.InventoryOpenAt 与 Busy 位。
+		//
+		// 走可靠通道（而不是与输入同一条快照通道）是 Task 7 定协议时的
+		// 决定，理由在这里仍然成立：交互是离散事件，丢掉一条等于玩家的
+		// 一次按键凭空消失；而输入是覆盖式数据，丢了下一帧就来新的。
+		b.handleInteract(s, body.Interact)
 	default:
 		b.log.Debug("可靠通道上未处理的消息类型", "session", s.ID())
 	}
@@ -423,6 +449,64 @@ func (b *netBridge) handleChooseSkill(s *netx.Session, msg *proto.ChooseSkill) {
 	case b.choices <- choiceApply{session: s, slot: slot, index: int(msg.GetChoiceIndex())}:
 	default:
 		b.log.Debug("技能选择队列满，丢弃", "session", s.ID(), "slot", slot)
+	}
+}
+
+// handleInteract 把交互请求投进队列。
+//
+// 结构照抄 handleChooseSkill（同一套"锁内只取座位号、锁外投递"的理由），
+// 差别只在校验 kind：room.Interact 自己也会拒，但在这里先拒能少走一趟
+// 队列，也让日志能区分"客户端发了不认识的 kind"与"房间侧拒绝"。
+func (b *netBridge) handleInteract(s *netx.Session, msg *proto.Interact) {
+	kind := int(msg.GetKind())
+	if kind != room.InteractKindPickupNearest && kind != room.InteractKindOpenInventory {
+		// proto 注释已经写明"其余值服务端忽略"，所以这是 Debug 不是 Warn：
+		// 未来版本的客户端可能先发了新 kind，服务端不该刷警告。
+		b.log.Debug("未知的交互类型，忽略", "session", s.ID(), "kind", kind)
+		return
+	}
+
+	b.mu.Lock()
+	cp, ok := b.peers[s.ID()]
+	var slot int
+	var joined bool
+	if ok {
+		slot, joined = cp.slot, cp.joined
+	}
+	b.mu.Unlock()
+
+	if !ok || !joined || slot < 0 {
+		b.log.Debug("未加入的会话发来交互", "session", s.ID(), "kind", kind)
+		return
+	}
+
+	select {
+	case b.interacts <- interactApply{session: s, slot: slot, kind: kind}:
+	default:
+		b.log.Debug("交互队列满，丢弃", "session", s.ID(), "slot", slot, "kind", kind)
+	}
+}
+
+// pumpInteracts 串行应用交互请求。
+//
+// 串行而非并发：Interact 会把请求投进 room 的 interacts 队列并等回执，
+// 并发调用的收益是零（room 侧本来就是 tick 级串行消费），却要多管理一批
+// 生命周期、多一份并发正确性的证明。
+func (b *netBridge) pumpInteracts() {
+	defer b.wg.Done()
+	for {
+		select {
+		case req := <-b.interacts:
+			if err := b.r.Interact(req.slot, req.kind); err != nil {
+				// 与技能选择同款：这些都是客户端行为或状态问题（死了还
+				// 开背包、未知 kind、房间已停），Debug 足够，免得误触刷屏。
+				b.log.Debug("交互被拒绝",
+					"session", req.session.ID(), "slot", req.slot,
+					"kind", req.kind, "err", err)
+			}
+		case <-b.ctx.Done():
+			return
+		}
 	}
 }
 

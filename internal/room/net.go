@@ -296,6 +296,35 @@ func (r *Room) drainChoices() {
 	}
 }
 
+// drainInteracts 把排队的交互请求应用到世界。
+//
+// 与 drainChoices 同款：非阻塞 for-select 消费到队列空，全在 tick goroutine
+// 里做，所以 applyInteractLocked 改 PlayerState 不需要任何锁。
+//
+// 不设"同一 tick 只处理一个"之类的节流：一次 Interact 只会写两个字段，
+// 而且 BeginOpenInventory 重复调用以最后一次为准，天然幂等。
+func (r *Room) drainInteracts() {
+	for {
+		select {
+		case req := <-r.interacts:
+			pp := r.peers.at(req.slot)
+			var err error
+			if pp == nil {
+				err = errNoPeer
+			} else {
+				err = r.applyInteractLocked(pp, req.kind)
+			}
+			// 非阻塞：回执通道满意味着调用方已放弃等待，丢弃即可。
+			select {
+			case req.reply <- err:
+			default:
+			}
+		default:
+			return
+		}
+	}
+}
+
 // Reliable 返回可靠下行消息的通道，供 bridge 泵到各会话。
 //
 // room 不 import netx（分层硬约束，AGENTS.md §2.4），而可靠下行只有 bridge
