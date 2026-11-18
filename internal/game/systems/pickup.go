@@ -154,15 +154,26 @@ func pickupTarget(w *world.World, pk *world.PickupState) *world.PlayerState {
 
 	var (
 		best     *world.PlayerState
-		bestDist = float64(PickupRadius) * float64(PickupRadius)
+		maxSq    = float64(PickupRadius) * float64(PickupRadius)
+		bestDist float64
 	)
 	// 只用 DistSq 比较，不做开方：开方是单调的，比较结果一样，却多一次
 	// 每 tick 每玩家每掉落物的 sqrt。
+	//
+	// 严格小于（而不是 <=）配 best == nil 首判定：等距时保留先遍历到的
+	// 那个。写 <= 的话等距会覆盖成后遍历到的，而这个函数上一段刚说过
+	// 「不取先遍历到的」——两句话就自相矛盾了。真正的规则是「取最近的；
+	// 最近的不唯一时按槽位顺序取先出现的」，后者仍是确定的切片顺序，
+	// 回放可复现。
 	w.Players.Each(func(_ world.EntityID, p *world.PlayerState) bool {
 		if p.State != world.PlayerAlive {
 			return true
 		}
-		if d := pk.Pos.DistSq(p.Pos); d <= bestDist {
+		d := pk.Pos.DistSq(p.Pos)
+		if d > maxSq {
+			return true
+		}
+		if best == nil || d < bestDist {
 			best, bestDist = p, d
 		}
 		return true
