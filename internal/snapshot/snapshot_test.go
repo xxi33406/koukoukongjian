@@ -74,6 +74,57 @@ func TestBuildSelfGoesToSelfFieldNotAdds(t *testing.T) {
 	}
 }
 
+// 等级信息必须进 Self。它是客户端画经验条的唯一来源，塞进 adds/updates
+// 不行——自己从不进增量（见 TestBuildSelfGoesToSelfFieldNotAdds）。
+func TestPlayerSelfCarriesLevelFields(t *testing.T) {
+	w := newTestWorld(t)
+	selfID, p := spawnPlayer(t, w)
+	p.Level = 5
+	p.Exp = 120
+	p.ExpToNext = 300
+
+	snap, _ := NewBuilder().Build(w, selfID, false)
+	if snap.Self == nil {
+		t.Fatal("self 不应为 nil")
+	}
+	if snap.Self.Level != 5 {
+		t.Errorf("Self.Level = %d，期望 5", snap.Self.Level)
+	}
+	if snap.Self.Exp != 120 {
+		t.Errorf("Self.Exp = %d，期望 120", snap.Self.Exp)
+	}
+	if snap.Self.ExpToNext != 300 {
+		t.Errorf("Self.ExpToNext = %d，期望 300", snap.Self.ExpToNext)
+	}
+}
+
+// 等级变化必须立刻反映到 Self 上，即使这一帧是增量的。
+//
+// 与上一个测试的区别：这里走第二帧且不是全量。等级不在 playerKey 里
+// （它是自己专属字段，不该触发别人视角的 update），所以只能靠
+// "Self 每帧重建"来保证。
+func TestPlayerSelfLevelUpdatesOnIncrementalSnapshot(t *testing.T) {
+	w := newTestWorld(t)
+	selfID, p := spawnPlayer(t, w)
+	b := NewBuilder()
+
+	if _, st := b.Build(w, selfID, false); !st.Full {
+		t.Fatal("首帧应全量")
+	}
+
+	p.Level = 2
+	p.Exp = 7
+	p.ExpToNext = 50
+	snap, st := b.Build(w, selfID, false)
+	if st.Full {
+		t.Fatal("第二帧不该是全量")
+	}
+	if snap.Self.Level != 2 || snap.Self.Exp != 7 || snap.Self.ExpToNext != 50 {
+		t.Fatalf("增量帧的等级字段 Level=%d Exp=%d ExpToNext=%d，期望 2/7/50",
+			snap.Self.Level, snap.Self.Exp, snap.Self.ExpToNext)
+	}
+}
+
 func TestBuildSecondSnapshotIsIncremental(t *testing.T) {
 	w := newTestWorld(t)
 	selfID, _ := spawnPlayer(t, w)

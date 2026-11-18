@@ -116,6 +116,57 @@ message PlayerSelf {
   uint32 gold = 7;
   uint32 state = 8;    // PlayerStateKind
   uint32 flags = 9;
+
+  // 以下三个字段是 M4 的成长信息。protobuf 没有 uint8/uint16，所以
+  // 小整数一律用 uint32，范围约束写在这里而不是交给类型检查：
+  //   level       1..99（MaxLevel），0 表示尚未初始化——出生时池只清零，
+  //               Level=1 由 room.handleJoin 设置，进 join 之前的帧里是 0。
+  //   exp         当前等级内已积累的经验，0..exp_to_next-1。
+  //   exp_to_next 升到下一级所需的经验（分母，客户端画进度条用）。
+  //               满级时由曲线给出 0，客户端见到 0 应当画满而不是除零。
+  uint32 level = 10;
+  uint32 exp = 11;
+  uint32 exp_to_next = 12;
+}
+
+// SkillChoice 是一个候选技能。
+message SkillChoice {
+  uint32 skill_id = 1; // 见 internal/game/build/skills.go 的 SkillID* 常量，1..8
+  uint32 kind = 2;     // 0=被动 1=主动（build.SkillKind，只有这两值）
+}
+
+// SkillChoices（S→C 可靠）是服务端发来的升级三选一。
+// 服务端权威：候选由服务端生成，客户端只负责显示与选择。
+// 客户端算不出候选，也不该算——候选池、稀有度、去重都在服务端。
+message SkillChoices {
+  uint32 level = 1;                 // 升到了几级，1..99
+  repeated SkillChoice choices = 2; // 2~3 个候选（池耗尽时可能更少）
+  // window_ticks 是决策窗口长度，单位 tick（20Hz 下 30 tick ≈ 1.5 秒）。
+  // 用 tick 不用秒：超时判定发生在 tick 循环里，「再过 N 个 tick」是精确
+  // 可复现的；用秒就要做时间→tick 的换算，同样 N 秒在不同 tick_rate
+  // 下窗口长度不同，回放测试也会因浮点而抖动。
+  uint32 window_ticks = 3;
+}
+
+// ChooseSkill（C→S 可靠）是玩家的选择。
+message ChooseSkill {
+  uint32 choice_index = 1; // 对应 SkillChoices.choices 的下标，越界由服务端拒绝
+}
+
+// Interact（C→S 可靠）是交互请求（M4 只用于拾取与开背包）。
+message Interact {
+  uint32 kind = 1; // 1=拾取最近 2=开背包，其余值服务端忽略
+}
+
+// Inventory（S→C 可靠）是玩家的背包状态。
+//
+// 为什么是独立消息而不是快照字段：背包只在开背包时看，且变化极低频
+// （升级选技能、拾取道具）。塞进每秒 20 次的 Snapshot.Self 会让每个
+// 玩家每帧多背最多 7 个变长数组，而其中 99% 的帧内容完全一样。
+message Inventory {
+  repeated uint32 active_skills = 1;  // 主动技能槽（上限 2），元素是 SkillID*
+  repeated uint32 passive_skills = 2; // 被动技能槽（上限 2），元素是 SkillID*
+  repeated uint32 items = 3;          // 道具槽（上限 3），元素是道具种类编号
 }
 
 message Snapshot {
@@ -213,5 +264,12 @@ message Envelope {
     Ping ping = 9;
     Pong pong = 10;
     ReqFullSnapshot req_full_snapshot = 11;
+
+    // M4 成长与交互。1-11 已上线，字段号只能往后续，不能插空或重排。
+    // 12~13 是升级三选一的一发一收，14 是交互请求，15 是背包状态。
+    SkillChoices skill_choices = 12;
+    ChooseSkill choose_skill = 13;
+    Interact interact = 14;
+    Inventory inventory = 15;
   }
 }

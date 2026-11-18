@@ -213,6 +213,170 @@ func TestEmptySnapshotRoundTrip(t *testing.T) {
 	}
 }
 
+// ---------- M4 成长与交互 ----------
+
+// 升级三选一必须完整往返：候选个数、每个候选的两个字段、等级与窗口
+// 长度一个都不能丢。丢任何一个客户端都画不出正确的选择界面。
+func TestSkillChoicesRoundTrip(t *testing.T) {
+	in := &SkillChoices{
+		Level: 7,
+		Choices: []*SkillChoice{
+			{SkillId: 5, Kind: 1}, // 冲刺，主动
+			{SkillId: 2, Kind: 0}, // 强健体魄，被动
+			{SkillId: 8, Kind: 1}, // 短时无敌，主动
+		},
+		WindowTicks: 30,
+	}
+
+	data, err := Marshal(Wrap(&Envelope_SkillChoices{SkillChoices: in}))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var out Envelope
+	if err := Unmarshal(data, &out); err != nil {
+		t.Fatal(err)
+	}
+	env, ok := out.Body.(*Envelope_SkillChoices)
+	if !ok {
+		t.Fatalf("oneof 类型丢失，得到 %T", out.Body)
+	}
+	got := env.SkillChoices
+	if got.Level != in.Level {
+		t.Errorf("Level = %d，期望 %d", got.Level, in.Level)
+	}
+	if got.WindowTicks != in.WindowTicks {
+		t.Errorf("WindowTicks = %d，期望 %d", got.WindowTicks, in.WindowTicks)
+	}
+	if len(got.Choices) != len(in.Choices) {
+		t.Fatalf("候选数 = %d，期望 %d", len(got.Choices), len(in.Choices))
+	}
+	for i := range in.Choices {
+		if got.Choices[i].SkillId != in.Choices[i].SkillId {
+			t.Errorf("候选 %d 的 SkillId = %d，期望 %d",
+				i, got.Choices[i].SkillId, in.Choices[i].SkillId)
+		}
+		if got.Choices[i].Kind != in.Choices[i].Kind {
+			t.Errorf("候选 %d 的 Kind = %d，期望 %d",
+				i, got.Choices[i].Kind, in.Choices[i].Kind)
+		}
+	}
+}
+
+// 选择下标必须原样往返：0 是合法值（选第一个），不能被当成"未设置"。
+func TestChooseSkillRoundTrip(t *testing.T) {
+	for _, idx := range []uint32{0, 1, 2} {
+		data, err := Marshal(Wrap(&Envelope_ChooseSkill{ChooseSkill: &ChooseSkill{ChoiceIndex: idx}}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out Envelope
+		if err := Unmarshal(data, &out); err != nil {
+			t.Fatal(err)
+		}
+		env, ok := out.Body.(*Envelope_ChooseSkill)
+		if !ok {
+			t.Fatalf("oneof 类型丢失，得到 %T", out.Body)
+		}
+		if got := env.ChooseSkill.ChoiceIndex; got != idx {
+			t.Errorf("ChoiceIndex = %d，期望 %d", got, idx)
+		}
+	}
+}
+
+func TestInteractRoundTrip(t *testing.T) {
+	// 1=拾取 2=开背包，两个合法值都要覆盖
+	for _, kind := range []uint32{1, 2} {
+		data, err := Marshal(Wrap(&Envelope_Interact{Interact: &Interact{Kind: kind}}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out Envelope
+		if err := Unmarshal(data, &out); err != nil {
+			t.Fatal(err)
+		}
+		env, ok := out.Body.(*Envelope_Interact)
+		if !ok {
+			t.Fatalf("oneof 类型丢失，得到 %T", out.Body)
+		}
+		if got := env.Interact.Kind; got != kind {
+			t.Errorf("Kind = %d，期望 %d", got, kind)
+		}
+	}
+}
+
+// 背包三种槽位分别往返。空切片必须合法（裸玩家还没有任何技能/道具），
+// 且往返后长度仍是 0——proto3 里空 repeated 不写线上，解出来是 nil，
+// 所以断言用 len() 而不是 != nil。
+func TestInventoryRoundTrip(t *testing.T) {
+	t.Run("空背包", func(t *testing.T) {
+		in := &Inventory{}
+		data, err := Marshal(Wrap(&Envelope_Inventory{Inventory: in}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out Envelope
+		if err := Unmarshal(data, &out); err != nil {
+			t.Fatal(err)
+		}
+		env, ok := out.Body.(*Envelope_Inventory)
+		if !ok {
+			t.Fatalf("oneof 类型丢失，得到 %T", out.Body)
+		}
+		got := env.Inventory
+		if len(got.ActiveSkills) != 0 || len(got.PassiveSkills) != 0 || len(got.Items) != 0 {
+			t.Fatalf("空背包往返后不空：active=%v passive=%v items=%v",
+				got.ActiveSkills, got.PassiveSkills, got.Items)
+		}
+	})
+
+	t.Run("满背包", func(t *testing.T) {
+		in := &Inventory{
+			ActiveSkills:  []uint32{5, 6},       // 主动上限 2
+			PassiveSkills: []uint32{1, 2},       // 被动上限 2
+			Items:         []uint32{11, 12, 13}, // 道具上限 3
+		}
+		data, err := Marshal(Wrap(&Envelope_Inventory{Inventory: in}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out Envelope
+		if err := Unmarshal(data, &out); err != nil {
+			t.Fatal(err)
+		}
+		env, ok := out.Body.(*Envelope_Inventory)
+		if !ok {
+			t.Fatalf("oneof 类型丢失，得到 %T", out.Body)
+		}
+		got := env.Inventory
+		if !equalUint32s(got.ActiveSkills, in.ActiveSkills) {
+			t.Errorf("ActiveSkills = %v，期望 %v", got.ActiveSkills, in.ActiveSkills)
+		}
+		if !equalUint32s(got.PassiveSkills, in.PassiveSkills) {
+			t.Errorf("PassiveSkills = %v，期望 %v", got.PassiveSkills, in.PassiveSkills)
+		}
+		if !equalUint32s(got.Items, in.Items) {
+			t.Errorf("Items = %v，期望 %v", got.Items, in.Items)
+		}
+	})
+}
+
+// equalUint32s 按值比较两个 uint32 切片，把 nil 与空切片视为相等。
+//
+// 不能用 reflect.DeepEqual：proto3 的 repeated 字段为空时不上线，解出来
+// 是 nil 而不是空切片，DeepEqual 会把「语义相同」的两者判成不等。
+func equalUint32s(a, b []uint32) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
 // 损坏的数据必须报错而不是静默产生半截对象。
 func TestUnmarshalRejectsGarbage(t *testing.T) {
 	var out Snapshot

@@ -709,16 +709,26 @@ func (x *Vec2Q) GetY() int32 {
 }
 
 type PlayerSelf struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	EntityId      uint32                 `protobuf:"varint,1,opt,name=entity_id,json=entityId,proto3" json:"entity_id,omitempty"`
-	Pos           *Vec2Q                 `protobuf:"bytes,2,opt,name=pos,proto3" json:"pos,omitempty"`  // 1/32 m
-	Vel           *Vec2Q                 `protobuf:"bytes,3,opt,name=vel,proto3" json:"vel,omitempty"`  // 1/256 m/s
-	Aim           uint32                 `protobuf:"varint,4,opt,name=aim,proto3" json:"aim,omitempty"` // 2π/65536
-	Hp            int32                  `protobuf:"varint,5,opt,name=hp,proto3" json:"hp,omitempty"`
-	MaxHp         int32                  `protobuf:"varint,6,opt,name=max_hp,json=maxHp,proto3" json:"max_hp,omitempty"`
-	Gold          uint32                 `protobuf:"varint,7,opt,name=gold,proto3" json:"gold,omitempty"`
-	State         uint32                 `protobuf:"varint,8,opt,name=state,proto3" json:"state,omitempty"` // PlayerStateKind
-	Flags         uint32                 `protobuf:"varint,9,opt,name=flags,proto3" json:"flags,omitempty"`
+	state    protoimpl.MessageState `protogen:"open.v1"`
+	EntityId uint32                 `protobuf:"varint,1,opt,name=entity_id,json=entityId,proto3" json:"entity_id,omitempty"`
+	Pos      *Vec2Q                 `protobuf:"bytes,2,opt,name=pos,proto3" json:"pos,omitempty"`  // 1/32 m
+	Vel      *Vec2Q                 `protobuf:"bytes,3,opt,name=vel,proto3" json:"vel,omitempty"`  // 1/256 m/s
+	Aim      uint32                 `protobuf:"varint,4,opt,name=aim,proto3" json:"aim,omitempty"` // 2π/65536
+	Hp       int32                  `protobuf:"varint,5,opt,name=hp,proto3" json:"hp,omitempty"`
+	MaxHp    int32                  `protobuf:"varint,6,opt,name=max_hp,json=maxHp,proto3" json:"max_hp,omitempty"`
+	Gold     uint32                 `protobuf:"varint,7,opt,name=gold,proto3" json:"gold,omitempty"`
+	State    uint32                 `protobuf:"varint,8,opt,name=state,proto3" json:"state,omitempty"` // PlayerStateKind
+	Flags    uint32                 `protobuf:"varint,9,opt,name=flags,proto3" json:"flags,omitempty"`
+	// 以下三个字段是 M4 的成长信息。protobuf 没有 uint8/uint16，所以
+	// 小整数一律用 uint32，范围约束写在这里而不是交给类型检查：
+	//   level       1..99（MaxLevel），0 表示尚未初始化——出生时池只清零，
+	//               Level=1 由 room.handleJoin 设置，进 join 之前的帧里是 0。
+	//   exp         当前等级内已积累的经验，0..exp_to_next-1。
+	//   exp_to_next 升到下一级所需的经验（分母，客户端画进度条用）。
+	//               满级时由曲线给出 0，客户端见到 0 应当画满而不是除零。
+	Level         uint32 `protobuf:"varint,10,opt,name=level,proto3" json:"level,omitempty"`
+	Exp           uint32 `protobuf:"varint,11,opt,name=exp,proto3" json:"exp,omitempty"`
+	ExpToNext     uint32 `protobuf:"varint,12,opt,name=exp_to_next,json=expToNext,proto3" json:"exp_to_next,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -816,6 +826,302 @@ func (x *PlayerSelf) GetFlags() uint32 {
 	return 0
 }
 
+func (x *PlayerSelf) GetLevel() uint32 {
+	if x != nil {
+		return x.Level
+	}
+	return 0
+}
+
+func (x *PlayerSelf) GetExp() uint32 {
+	if x != nil {
+		return x.Exp
+	}
+	return 0
+}
+
+func (x *PlayerSelf) GetExpToNext() uint32 {
+	if x != nil {
+		return x.ExpToNext
+	}
+	return 0
+}
+
+// SkillChoice 是一个候选技能。
+type SkillChoice struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	SkillId       uint32                 `protobuf:"varint,1,opt,name=skill_id,json=skillId,proto3" json:"skill_id,omitempty"` // 见 internal/game/build/skills.go 的 SkillID* 常量，1..8
+	Kind          uint32                 `protobuf:"varint,2,opt,name=kind,proto3" json:"kind,omitempty"`                      // 0=被动 1=主动（build.SkillKind，只有这两值）
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SkillChoice) Reset() {
+	*x = SkillChoice{}
+	mi := &file_internal_proto_game_proto_msgTypes[10]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SkillChoice) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SkillChoice) ProtoMessage() {}
+
+func (x *SkillChoice) ProtoReflect() protoreflect.Message {
+	mi := &file_internal_proto_game_proto_msgTypes[10]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SkillChoice.ProtoReflect.Descriptor instead.
+func (*SkillChoice) Descriptor() ([]byte, []int) {
+	return file_internal_proto_game_proto_rawDescGZIP(), []int{10}
+}
+
+func (x *SkillChoice) GetSkillId() uint32 {
+	if x != nil {
+		return x.SkillId
+	}
+	return 0
+}
+
+func (x *SkillChoice) GetKind() uint32 {
+	if x != nil {
+		return x.Kind
+	}
+	return 0
+}
+
+// SkillChoices（S→C 可靠）是服务端发来的升级三选一。
+// 服务端权威：候选由服务端生成，客户端只负责显示与选择。
+// 客户端算不出候选，也不该算——候选池、稀有度、去重都在服务端。
+type SkillChoices struct {
+	state   protoimpl.MessageState `protogen:"open.v1"`
+	Level   uint32                 `protobuf:"varint,1,opt,name=level,proto3" json:"level,omitempty"`    // 升到了几级，1..99
+	Choices []*SkillChoice         `protobuf:"bytes,2,rep,name=choices,proto3" json:"choices,omitempty"` // 2~3 个候选（池耗尽时可能更少）
+	// window_ticks 是决策窗口长度，单位 tick（20Hz 下 30 tick ≈ 1.5 秒）。
+	// 用 tick 不用秒：超时判定发生在 tick 循环里，「再过 N 个 tick」是精确
+	// 可复现的；用秒就要做时间→tick 的换算，同样 N 秒在不同 tick_rate
+	// 下窗口长度不同，回放测试也会因浮点而抖动。
+	WindowTicks   uint32 `protobuf:"varint,3,opt,name=window_ticks,json=windowTicks,proto3" json:"window_ticks,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SkillChoices) Reset() {
+	*x = SkillChoices{}
+	mi := &file_internal_proto_game_proto_msgTypes[11]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SkillChoices) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SkillChoices) ProtoMessage() {}
+
+func (x *SkillChoices) ProtoReflect() protoreflect.Message {
+	mi := &file_internal_proto_game_proto_msgTypes[11]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SkillChoices.ProtoReflect.Descriptor instead.
+func (*SkillChoices) Descriptor() ([]byte, []int) {
+	return file_internal_proto_game_proto_rawDescGZIP(), []int{11}
+}
+
+func (x *SkillChoices) GetLevel() uint32 {
+	if x != nil {
+		return x.Level
+	}
+	return 0
+}
+
+func (x *SkillChoices) GetChoices() []*SkillChoice {
+	if x != nil {
+		return x.Choices
+	}
+	return nil
+}
+
+func (x *SkillChoices) GetWindowTicks() uint32 {
+	if x != nil {
+		return x.WindowTicks
+	}
+	return 0
+}
+
+// ChooseSkill（C→S 可靠）是玩家的选择。
+type ChooseSkill struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	ChoiceIndex   uint32                 `protobuf:"varint,1,opt,name=choice_index,json=choiceIndex,proto3" json:"choice_index,omitempty"` // 对应 SkillChoices.choices 的下标，越界由服务端拒绝
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ChooseSkill) Reset() {
+	*x = ChooseSkill{}
+	mi := &file_internal_proto_game_proto_msgTypes[12]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ChooseSkill) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ChooseSkill) ProtoMessage() {}
+
+func (x *ChooseSkill) ProtoReflect() protoreflect.Message {
+	mi := &file_internal_proto_game_proto_msgTypes[12]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ChooseSkill.ProtoReflect.Descriptor instead.
+func (*ChooseSkill) Descriptor() ([]byte, []int) {
+	return file_internal_proto_game_proto_rawDescGZIP(), []int{12}
+}
+
+func (x *ChooseSkill) GetChoiceIndex() uint32 {
+	if x != nil {
+		return x.ChoiceIndex
+	}
+	return 0
+}
+
+// Interact（C→S 可靠）是交互请求（M4 只用于拾取与开背包）。
+type Interact struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Kind          uint32                 `protobuf:"varint,1,opt,name=kind,proto3" json:"kind,omitempty"` // 1=拾取最近 2=开背包，其余值服务端忽略
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Interact) Reset() {
+	*x = Interact{}
+	mi := &file_internal_proto_game_proto_msgTypes[13]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Interact) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Interact) ProtoMessage() {}
+
+func (x *Interact) ProtoReflect() protoreflect.Message {
+	mi := &file_internal_proto_game_proto_msgTypes[13]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Interact.ProtoReflect.Descriptor instead.
+func (*Interact) Descriptor() ([]byte, []int) {
+	return file_internal_proto_game_proto_rawDescGZIP(), []int{13}
+}
+
+func (x *Interact) GetKind() uint32 {
+	if x != nil {
+		return x.Kind
+	}
+	return 0
+}
+
+// Inventory（S→C 可靠）是玩家的背包状态。
+//
+// 为什么是独立消息而不是快照字段：背包只在开背包时看，且变化极低频
+// （升级选技能、拾取道具）。塞进每秒 20 次的 Snapshot.Self 会让每个
+// 玩家每帧多背最多 7 个变长数组，而其中 99% 的帧内容完全一样。
+type Inventory struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	ActiveSkills  []uint32               `protobuf:"varint,1,rep,packed,name=active_skills,json=activeSkills,proto3" json:"active_skills,omitempty"`    // 主动技能槽（上限 2），元素是 SkillID*
+	PassiveSkills []uint32               `protobuf:"varint,2,rep,packed,name=passive_skills,json=passiveSkills,proto3" json:"passive_skills,omitempty"` // 被动技能槽（上限 2），元素是 SkillID*
+	Items         []uint32               `protobuf:"varint,3,rep,packed,name=items,proto3" json:"items,omitempty"`                                      // 道具槽（上限 3），元素是道具种类编号
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Inventory) Reset() {
+	*x = Inventory{}
+	mi := &file_internal_proto_game_proto_msgTypes[14]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Inventory) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Inventory) ProtoMessage() {}
+
+func (x *Inventory) ProtoReflect() protoreflect.Message {
+	mi := &file_internal_proto_game_proto_msgTypes[14]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Inventory.ProtoReflect.Descriptor instead.
+func (*Inventory) Descriptor() ([]byte, []int) {
+	return file_internal_proto_game_proto_rawDescGZIP(), []int{14}
+}
+
+func (x *Inventory) GetActiveSkills() []uint32 {
+	if x != nil {
+		return x.ActiveSkills
+	}
+	return nil
+}
+
+func (x *Inventory) GetPassiveSkills() []uint32 {
+	if x != nil {
+		return x.PassiveSkills
+	}
+	return nil
+}
+
+func (x *Inventory) GetItems() []uint32 {
+	if x != nil {
+		return x.Items
+	}
+	return nil
+}
+
 type Snapshot struct {
 	state          protoimpl.MessageState `protogen:"open.v1"`
 	ServerTick     uint32                 `protobuf:"varint,1,opt,name=server_tick,json=serverTick,proto3" json:"server_tick,omitempty"`
@@ -832,7 +1138,7 @@ type Snapshot struct {
 
 func (x *Snapshot) Reset() {
 	*x = Snapshot{}
-	mi := &file_internal_proto_game_proto_msgTypes[10]
+	mi := &file_internal_proto_game_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -844,7 +1150,7 @@ func (x *Snapshot) String() string {
 func (*Snapshot) ProtoMessage() {}
 
 func (x *Snapshot) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_proto_game_proto_msgTypes[10]
+	mi := &file_internal_proto_game_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -857,7 +1163,7 @@ func (x *Snapshot) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Snapshot.ProtoReflect.Descriptor instead.
 func (*Snapshot) Descriptor() ([]byte, []int) {
-	return file_internal_proto_game_proto_rawDescGZIP(), []int{10}
+	return file_internal_proto_game_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *Snapshot) GetServerTick() uint32 {
@@ -937,7 +1243,7 @@ type EntityDelta struct {
 
 func (x *EntityDelta) Reset() {
 	*x = EntityDelta{}
-	mi := &file_internal_proto_game_proto_msgTypes[11]
+	mi := &file_internal_proto_game_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -949,7 +1255,7 @@ func (x *EntityDelta) String() string {
 func (*EntityDelta) ProtoMessage() {}
 
 func (x *EntityDelta) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_proto_game_proto_msgTypes[11]
+	mi := &file_internal_proto_game_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -962,7 +1268,7 @@ func (x *EntityDelta) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EntityDelta.ProtoReflect.Descriptor instead.
 func (*EntityDelta) Descriptor() ([]byte, []int) {
-	return file_internal_proto_game_proto_rawDescGZIP(), []int{11}
+	return file_internal_proto_game_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *EntityDelta) GetEntityId() uint32 {
@@ -1062,7 +1368,7 @@ type GameEvent struct {
 
 func (x *GameEvent) Reset() {
 	*x = GameEvent{}
-	mi := &file_internal_proto_game_proto_msgTypes[12]
+	mi := &file_internal_proto_game_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1074,7 +1380,7 @@ func (x *GameEvent) String() string {
 func (*GameEvent) ProtoMessage() {}
 
 func (x *GameEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_proto_game_proto_msgTypes[12]
+	mi := &file_internal_proto_game_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1087,7 +1393,7 @@ func (x *GameEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GameEvent.ProtoReflect.Descriptor instead.
 func (*GameEvent) Descriptor() ([]byte, []int) {
-	return file_internal_proto_game_proto_rawDescGZIP(), []int{12}
+	return file_internal_proto_game_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *GameEvent) GetKind() GameEventKind {
@@ -1135,7 +1441,7 @@ type Ping struct {
 
 func (x *Ping) Reset() {
 	*x = Ping{}
-	mi := &file_internal_proto_game_proto_msgTypes[13]
+	mi := &file_internal_proto_game_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1147,7 +1453,7 @@ func (x *Ping) String() string {
 func (*Ping) ProtoMessage() {}
 
 func (x *Ping) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_proto_game_proto_msgTypes[13]
+	mi := &file_internal_proto_game_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1160,7 +1466,7 @@ func (x *Ping) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Ping.ProtoReflect.Descriptor instead.
 func (*Ping) Descriptor() ([]byte, []int) {
-	return file_internal_proto_game_proto_rawDescGZIP(), []int{13}
+	return file_internal_proto_game_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *Ping) GetClientTimeNs() uint64 {
@@ -1180,7 +1486,7 @@ type Pong struct {
 
 func (x *Pong) Reset() {
 	*x = Pong{}
-	mi := &file_internal_proto_game_proto_msgTypes[14]
+	mi := &file_internal_proto_game_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1192,7 +1498,7 @@ func (x *Pong) String() string {
 func (*Pong) ProtoMessage() {}
 
 func (x *Pong) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_proto_game_proto_msgTypes[14]
+	mi := &file_internal_proto_game_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1205,7 +1511,7 @@ func (x *Pong) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Pong.ProtoReflect.Descriptor instead.
 func (*Pong) Descriptor() ([]byte, []int) {
-	return file_internal_proto_game_proto_rawDescGZIP(), []int{14}
+	return file_internal_proto_game_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *Pong) GetClientTimeNs() uint64 {
@@ -1232,7 +1538,7 @@ type ReqFullSnapshot struct {
 
 func (x *ReqFullSnapshot) Reset() {
 	*x = ReqFullSnapshot{}
-	mi := &file_internal_proto_game_proto_msgTypes[15]
+	mi := &file_internal_proto_game_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1244,7 +1550,7 @@ func (x *ReqFullSnapshot) String() string {
 func (*ReqFullSnapshot) ProtoMessage() {}
 
 func (x *ReqFullSnapshot) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_proto_game_proto_msgTypes[15]
+	mi := &file_internal_proto_game_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1257,7 +1563,7 @@ func (x *ReqFullSnapshot) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReqFullSnapshot.ProtoReflect.Descriptor instead.
 func (*ReqFullSnapshot) Descriptor() ([]byte, []int) {
-	return file_internal_proto_game_proto_rawDescGZIP(), []int{15}
+	return file_internal_proto_game_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *ReqFullSnapshot) GetLastSeenTick() uint32 {
@@ -1292,6 +1598,10 @@ type Envelope struct {
 	//	*Envelope_Ping
 	//	*Envelope_Pong
 	//	*Envelope_ReqFullSnapshot
+	//	*Envelope_SkillChoices
+	//	*Envelope_ChooseSkill
+	//	*Envelope_Interact
+	//	*Envelope_Inventory
 	Body          isEnvelope_Body `protobuf_oneof:"body"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -1299,7 +1609,7 @@ type Envelope struct {
 
 func (x *Envelope) Reset() {
 	*x = Envelope{}
-	mi := &file_internal_proto_game_proto_msgTypes[16]
+	mi := &file_internal_proto_game_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1311,7 +1621,7 @@ func (x *Envelope) String() string {
 func (*Envelope) ProtoMessage() {}
 
 func (x *Envelope) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_proto_game_proto_msgTypes[16]
+	mi := &file_internal_proto_game_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1324,7 +1634,7 @@ func (x *Envelope) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Envelope.ProtoReflect.Descriptor instead.
 func (*Envelope) Descriptor() ([]byte, []int) {
-	return file_internal_proto_game_proto_rawDescGZIP(), []int{16}
+	return file_internal_proto_game_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *Envelope) GetBody() isEnvelope_Body {
@@ -1433,6 +1743,42 @@ func (x *Envelope) GetReqFullSnapshot() *ReqFullSnapshot {
 	return nil
 }
 
+func (x *Envelope) GetSkillChoices() *SkillChoices {
+	if x != nil {
+		if x, ok := x.Body.(*Envelope_SkillChoices); ok {
+			return x.SkillChoices
+		}
+	}
+	return nil
+}
+
+func (x *Envelope) GetChooseSkill() *ChooseSkill {
+	if x != nil {
+		if x, ok := x.Body.(*Envelope_ChooseSkill); ok {
+			return x.ChooseSkill
+		}
+	}
+	return nil
+}
+
+func (x *Envelope) GetInteract() *Interact {
+	if x != nil {
+		if x, ok := x.Body.(*Envelope_Interact); ok {
+			return x.Interact
+		}
+	}
+	return nil
+}
+
+func (x *Envelope) GetInventory() *Inventory {
+	if x != nil {
+		if x, ok := x.Body.(*Envelope_Inventory); ok {
+			return x.Inventory
+		}
+	}
+	return nil
+}
+
 type isEnvelope_Body interface {
 	isEnvelope_Body()
 }
@@ -1481,6 +1827,24 @@ type Envelope_ReqFullSnapshot struct {
 	ReqFullSnapshot *ReqFullSnapshot `protobuf:"bytes,11,opt,name=req_full_snapshot,json=reqFullSnapshot,proto3,oneof"`
 }
 
+type Envelope_SkillChoices struct {
+	// M4 成长与交互。1-11 已上线，字段号只能往后续，不能插空或重排。
+	// 12~13 是升级三选一的一发一收，14 是交互请求，15 是背包状态。
+	SkillChoices *SkillChoices `protobuf:"bytes,12,opt,name=skill_choices,json=skillChoices,proto3,oneof"`
+}
+
+type Envelope_ChooseSkill struct {
+	ChooseSkill *ChooseSkill `protobuf:"bytes,13,opt,name=choose_skill,json=chooseSkill,proto3,oneof"`
+}
+
+type Envelope_Interact struct {
+	Interact *Interact `protobuf:"bytes,14,opt,name=interact,proto3,oneof"`
+}
+
+type Envelope_Inventory struct {
+	Inventory *Inventory `protobuf:"bytes,15,opt,name=inventory,proto3,oneof"`
+}
+
 func (*Envelope_Hello) isEnvelope_Body() {}
 
 func (*Envelope_HelloAck) isEnvelope_Body() {}
@@ -1502,6 +1866,14 @@ func (*Envelope_Ping) isEnvelope_Body() {}
 func (*Envelope_Pong) isEnvelope_Body() {}
 
 func (*Envelope_ReqFullSnapshot) isEnvelope_Body() {}
+
+func (*Envelope_SkillChoices) isEnvelope_Body() {}
+
+func (*Envelope_ChooseSkill) isEnvelope_Body() {}
+
+func (*Envelope_Interact) isEnvelope_Body() {}
+
+func (*Envelope_Inventory) isEnvelope_Body() {}
 
 var File_internal_proto_game_proto protoreflect.FileDescriptor
 
@@ -1549,7 +1921,7 @@ const file_internal_proto_game_proto_rawDesc = "" +
 	"\abuttons\x18\x06 \x01(\rR\abuttons\"#\n" +
 	"\x05Vec2Q\x12\f\n" +
 	"\x01x\x18\x01 \x01(\x05R\x01x\x12\f\n" +
-	"\x01y\x18\x02 \x01(\x05R\x01y\"\xe2\x01\n" +
+	"\x01y\x18\x02 \x01(\x05R\x01y\"\xaa\x02\n" +
 	"\n" +
 	"PlayerSelf\x12\x1b\n" +
 	"\tentity_id\x18\x01 \x01(\rR\bentityId\x12\x1e\n" +
@@ -1560,7 +1932,26 @@ const file_internal_proto_game_proto_rawDesc = "" +
 	"\x06max_hp\x18\x06 \x01(\x05R\x05maxHp\x12\x12\n" +
 	"\x04gold\x18\a \x01(\rR\x04gold\x12\x14\n" +
 	"\x05state\x18\b \x01(\rR\x05state\x12\x14\n" +
-	"\x05flags\x18\t \x01(\rR\x05flags\"\xb3\x02\n" +
+	"\x05flags\x18\t \x01(\rR\x05flags\x12\x14\n" +
+	"\x05level\x18\n" +
+	" \x01(\rR\x05level\x12\x10\n" +
+	"\x03exp\x18\v \x01(\rR\x03exp\x12\x1e\n" +
+	"\vexp_to_next\x18\f \x01(\rR\texpToNext\"<\n" +
+	"\vSkillChoice\x12\x19\n" +
+	"\bskill_id\x18\x01 \x01(\rR\askillId\x12\x12\n" +
+	"\x04kind\x18\x02 \x01(\rR\x04kind\"u\n" +
+	"\fSkillChoices\x12\x14\n" +
+	"\x05level\x18\x01 \x01(\rR\x05level\x12,\n" +
+	"\achoices\x18\x02 \x03(\v2\x12.proto.SkillChoiceR\achoices\x12!\n" +
+	"\fwindow_ticks\x18\x03 \x01(\rR\vwindowTicks\"0\n" +
+	"\vChooseSkill\x12!\n" +
+	"\fchoice_index\x18\x01 \x01(\rR\vchoiceIndex\"\x1e\n" +
+	"\bInteract\x12\x12\n" +
+	"\x04kind\x18\x01 \x01(\rR\x04kind\"m\n" +
+	"\tInventory\x12#\n" +
+	"\ractive_skills\x18\x01 \x03(\rR\factiveSkills\x12%\n" +
+	"\x0epassive_skills\x18\x02 \x03(\rR\rpassiveSkills\x12\x14\n" +
+	"\x05items\x18\x03 \x03(\rR\x05items\"\xb3\x02\n" +
 	"\bSnapshot\x12\x1f\n" +
 	"\vserver_tick\x18\x01 \x01(\rR\n" +
 	"serverTick\x12(\n" +
@@ -1597,7 +1988,7 @@ const file_internal_proto_game_proto_rawDesc = "" +
 	"\x0eclient_time_ns\x18\x01 \x01(\x04R\fclientTimeNs\x12$\n" +
 	"\x0eserver_time_ns\x18\x02 \x01(\x04R\fserverTimeNs\"7\n" +
 	"\x0fReqFullSnapshot\x12$\n" +
-	"\x0elast_seen_tick\x18\x01 \x01(\rR\flastSeenTick\"\x95\x04\n" +
+	"\x0elast_seen_tick\x18\x01 \x01(\rR\flastSeenTick\"\xeb\x05\n" +
 	"\bEnvelope\x12$\n" +
 	"\x05hello\x18\x01 \x01(\v2\f.proto.HelloH\x00R\x05hello\x12.\n" +
 	"\thello_ack\x18\x02 \x01(\v2\x0f.proto.HelloAckH\x00R\bhelloAck\x12.\n" +
@@ -1611,7 +2002,11 @@ const file_internal_proto_game_proto_rawDesc = "" +
 	"\x04ping\x18\t \x01(\v2\v.proto.PingH\x00R\x04ping\x12!\n" +
 	"\x04pong\x18\n" +
 	" \x01(\v2\v.proto.PongH\x00R\x04pong\x12D\n" +
-	"\x11req_full_snapshot\x18\v \x01(\v2\x16.proto.ReqFullSnapshotH\x00R\x0freqFullSnapshotB\x06\n" +
+	"\x11req_full_snapshot\x18\v \x01(\v2\x16.proto.ReqFullSnapshotH\x00R\x0freqFullSnapshot\x12:\n" +
+	"\rskill_choices\x18\f \x01(\v2\x13.proto.SkillChoicesH\x00R\fskillChoices\x127\n" +
+	"\fchoose_skill\x18\r \x01(\v2\x12.proto.ChooseSkillH\x00R\vchooseSkill\x12-\n" +
+	"\binteract\x18\x0e \x01(\v2\x0f.proto.InteractH\x00R\binteract\x120\n" +
+	"\tinventory\x18\x0f \x01(\v2\x10.proto.InventoryH\x00R\tinventoryB\x06\n" +
 	"\x04body*\x8a\x01\n" +
 	"\n" +
 	"EntityKind\x12\x1b\n" +
@@ -1642,7 +2037,7 @@ func file_internal_proto_game_proto_rawDescGZIP() []byte {
 }
 
 var file_internal_proto_game_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_internal_proto_game_proto_msgTypes = make([]protoimpl.MessageInfo, 17)
+var file_internal_proto_game_proto_msgTypes = make([]protoimpl.MessageInfo, 22)
 var file_internal_proto_game_proto_goTypes = []any{
 	(EntityKind)(0),         // 0: proto.EntityKind
 	(GameEventKind)(0),      // 1: proto.GameEventKind
@@ -1656,42 +2051,52 @@ var file_internal_proto_game_proto_goTypes = []any{
 	(*InputFrame)(nil),      // 9: proto.InputFrame
 	(*Vec2Q)(nil),           // 10: proto.Vec2Q
 	(*PlayerSelf)(nil),      // 11: proto.PlayerSelf
-	(*Snapshot)(nil),        // 12: proto.Snapshot
-	(*EntityDelta)(nil),     // 13: proto.EntityDelta
-	(*GameEvent)(nil),       // 14: proto.GameEvent
-	(*Ping)(nil),            // 15: proto.Ping
-	(*Pong)(nil),            // 16: proto.Pong
-	(*ReqFullSnapshot)(nil), // 17: proto.ReqFullSnapshot
-	(*Envelope)(nil),        // 18: proto.Envelope
+	(*SkillChoice)(nil),     // 12: proto.SkillChoice
+	(*SkillChoices)(nil),    // 13: proto.SkillChoices
+	(*ChooseSkill)(nil),     // 14: proto.ChooseSkill
+	(*Interact)(nil),        // 15: proto.Interact
+	(*Inventory)(nil),       // 16: proto.Inventory
+	(*Snapshot)(nil),        // 17: proto.Snapshot
+	(*EntityDelta)(nil),     // 18: proto.EntityDelta
+	(*GameEvent)(nil),       // 19: proto.GameEvent
+	(*Ping)(nil),            // 20: proto.Ping
+	(*Pong)(nil),            // 21: proto.Pong
+	(*ReqFullSnapshot)(nil), // 22: proto.ReqFullSnapshot
+	(*Envelope)(nil),        // 23: proto.Envelope
 }
 var file_internal_proto_game_proto_depIdxs = []int32{
 	9,  // 0: proto.Input.frames:type_name -> proto.InputFrame
 	10, // 1: proto.PlayerSelf.pos:type_name -> proto.Vec2Q
 	10, // 2: proto.PlayerSelf.vel:type_name -> proto.Vec2Q
-	11, // 3: proto.Snapshot.self:type_name -> proto.PlayerSelf
-	13, // 4: proto.Snapshot.adds:type_name -> proto.EntityDelta
-	13, // 5: proto.Snapshot.updates:type_name -> proto.EntityDelta
-	14, // 6: proto.Snapshot.events:type_name -> proto.GameEvent
-	0,  // 7: proto.EntityDelta.kind:type_name -> proto.EntityKind
-	10, // 8: proto.EntityDelta.pos:type_name -> proto.Vec2Q
-	10, // 9: proto.EntityDelta.vel:type_name -> proto.Vec2Q
-	1,  // 10: proto.GameEvent.kind:type_name -> proto.GameEventKind
-	2,  // 11: proto.Envelope.hello:type_name -> proto.Hello
-	3,  // 12: proto.Envelope.hello_ack:type_name -> proto.HelloAck
-	4,  // 13: proto.Envelope.join_room:type_name -> proto.JoinRoom
-	5,  // 14: proto.Envelope.join_ok:type_name -> proto.JoinOk
-	6,  // 15: proto.Envelope.player_joined:type_name -> proto.PlayerJoined
-	7,  // 16: proto.Envelope.player_left:type_name -> proto.PlayerLeft
-	8,  // 17: proto.Envelope.input:type_name -> proto.Input
-	12, // 18: proto.Envelope.snapshot:type_name -> proto.Snapshot
-	15, // 19: proto.Envelope.ping:type_name -> proto.Ping
-	16, // 20: proto.Envelope.pong:type_name -> proto.Pong
-	17, // 21: proto.Envelope.req_full_snapshot:type_name -> proto.ReqFullSnapshot
-	22, // [22:22] is the sub-list for method output_type
-	22, // [22:22] is the sub-list for method input_type
-	22, // [22:22] is the sub-list for extension type_name
-	22, // [22:22] is the sub-list for extension extendee
-	0,  // [0:22] is the sub-list for field type_name
+	12, // 3: proto.SkillChoices.choices:type_name -> proto.SkillChoice
+	11, // 4: proto.Snapshot.self:type_name -> proto.PlayerSelf
+	18, // 5: proto.Snapshot.adds:type_name -> proto.EntityDelta
+	18, // 6: proto.Snapshot.updates:type_name -> proto.EntityDelta
+	19, // 7: proto.Snapshot.events:type_name -> proto.GameEvent
+	0,  // 8: proto.EntityDelta.kind:type_name -> proto.EntityKind
+	10, // 9: proto.EntityDelta.pos:type_name -> proto.Vec2Q
+	10, // 10: proto.EntityDelta.vel:type_name -> proto.Vec2Q
+	1,  // 11: proto.GameEvent.kind:type_name -> proto.GameEventKind
+	2,  // 12: proto.Envelope.hello:type_name -> proto.Hello
+	3,  // 13: proto.Envelope.hello_ack:type_name -> proto.HelloAck
+	4,  // 14: proto.Envelope.join_room:type_name -> proto.JoinRoom
+	5,  // 15: proto.Envelope.join_ok:type_name -> proto.JoinOk
+	6,  // 16: proto.Envelope.player_joined:type_name -> proto.PlayerJoined
+	7,  // 17: proto.Envelope.player_left:type_name -> proto.PlayerLeft
+	8,  // 18: proto.Envelope.input:type_name -> proto.Input
+	17, // 19: proto.Envelope.snapshot:type_name -> proto.Snapshot
+	20, // 20: proto.Envelope.ping:type_name -> proto.Ping
+	21, // 21: proto.Envelope.pong:type_name -> proto.Pong
+	22, // 22: proto.Envelope.req_full_snapshot:type_name -> proto.ReqFullSnapshot
+	13, // 23: proto.Envelope.skill_choices:type_name -> proto.SkillChoices
+	14, // 24: proto.Envelope.choose_skill:type_name -> proto.ChooseSkill
+	15, // 25: proto.Envelope.interact:type_name -> proto.Interact
+	16, // 26: proto.Envelope.inventory:type_name -> proto.Inventory
+	27, // [27:27] is the sub-list for method output_type
+	27, // [27:27] is the sub-list for method input_type
+	27, // [27:27] is the sub-list for extension type_name
+	27, // [27:27] is the sub-list for extension extendee
+	0,  // [0:27] is the sub-list for field type_name
 }
 
 func init() { file_internal_proto_game_proto_init() }
@@ -1699,7 +2104,7 @@ func file_internal_proto_game_proto_init() {
 	if File_internal_proto_game_proto != nil {
 		return
 	}
-	file_internal_proto_game_proto_msgTypes[16].OneofWrappers = []any{
+	file_internal_proto_game_proto_msgTypes[21].OneofWrappers = []any{
 		(*Envelope_Hello)(nil),
 		(*Envelope_HelloAck)(nil),
 		(*Envelope_JoinRoom)(nil),
@@ -1711,6 +2116,10 @@ func file_internal_proto_game_proto_init() {
 		(*Envelope_Ping)(nil),
 		(*Envelope_Pong)(nil),
 		(*Envelope_ReqFullSnapshot)(nil),
+		(*Envelope_SkillChoices)(nil),
+		(*Envelope_ChooseSkill)(nil),
+		(*Envelope_Interact)(nil),
+		(*Envelope_Inventory)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
@@ -1718,7 +2127,7 @@ func file_internal_proto_game_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_internal_proto_game_proto_rawDesc), len(file_internal_proto_game_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   17,
+			NumMessages:   22,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

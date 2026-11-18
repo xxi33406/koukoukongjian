@@ -293,6 +293,12 @@ func playerSelf(id world.EntityID, p *world.PlayerState) *proto.PlayerSelf {
 		Gold:     p.Gold,
 		State:    uint32(p.State),
 		Flags:    uint32(p.Flags),
+		// Level 在 world 里是 uint8（只可能是 1..99），协议侧没有 uint8，
+		// 这里扩宽成 uint32。Level=0 表示还没进 handleJoin，客户端据此
+		// 可以先把经验条藏起来。
+		Level:     uint32(p.Level),
+		Exp:       p.Exp,
+		ExpToNext: p.ExpToNext,
 	}
 }
 
