@@ -259,6 +259,14 @@ func TestValidateRejectsBadMapMonster(t *testing.T) {
 		{"每波怪数超上限", func(c *Config) { c.Waves.MonstersPerWave = 33 }},
 		{"波间隔为负", func(c *Config) { c.Waves.InterWaveDelayS = -0.1 }},
 		{"视野距离过小", func(c *Config) { c.Monster.SightRange = 0.5 }},
+		// 以下五项是 M4 Task 2 实测发现的漏网字段：它们有区间校验，
+		// 但 NaN 对一切区间比较恒为假，等于裸奔。没有这组负例，把
+		// addNaN 那五行删掉不会有任何测试变红。
+		{"命中容差半径为 NaN", func(c *Config) { c.Combat.HitLeniencyRadius = math.NaN() }},
+		{"仇恨重算间隔为 Inf", func(c *Config) { c.AI.AggroRescoreIntervalS = math.Inf(1) }},
+		{"路径重算间隔为 NaN", func(c *Config) { c.AI.PathRecalcIntervalS = math.NaN() }},
+		{"空间格尺寸为 NaN", func(c *Config) { c.Space.SpatialCellSize = math.NaN() }},
+		{"地形格尺寸为 Inf", func(c *Config) { c.Space.TerrainCellSize = math.Inf(-1) }},
 	}
 	for _, tc := range cases {
 		c := Default()

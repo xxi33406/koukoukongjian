@@ -339,6 +339,16 @@ func (c *Config) Validate() error {
 	addNaN("progression.exp_base", c.Progression.ExpBase)
 	addNaN("progression.exp_growth", c.Progression.ExpGrowth)
 	addNaN("progression.skill_choice_window_s", c.Progression.SkillChoiceWindowS)
+	// 漏网的五项（M4 Task 2 实测 NaN 静默放行）：它们都有区间校验，但
+	// 区间比较对 NaN 恒为假，所以「不能为负」「必须为正」全都放过了 NaN。
+	// 下游后果与上面几条同级——hit_leniency_radius 进命中盒计算、
+	// spatial/terrain_cell_size 进 uint32 换算（world.go 的 secondsToTicks
+	// 一类），NaN 转整数是平台相关的未定义值（AGENTS §2.6 第一条）。
+	addNaN("combat.hit_leniency_radius", c.Combat.HitLeniencyRadius)
+	addNaN("ai.aggro_rescore_interval_s", c.AI.AggroRescoreIntervalS)
+	addNaN("ai.path_recalc_interval_s", c.AI.PathRecalcIntervalS)
+	addNaN("space.spatial_cell_size", c.Space.SpatialCellSize)
+	addNaN("space.terrain_cell_size", c.Space.TerrainCellSize)
 
 	if c.Fog.RevealRadius < 1 || c.Fog.RevealRadius > 64 {
 		add("fog.reveal_radius = %v，必须在 1..64", c.Fog.RevealRadius)
