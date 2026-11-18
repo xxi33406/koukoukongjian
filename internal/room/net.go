@@ -267,6 +267,45 @@ func (r *Room) drainInputs() {
 	}
 }
 
+// drainChoices 把排队的技能选择请求应用到世界。
+//
+// 与 drainInputs 同款：非阻塞 for-select 消费到队列空，全在 tick goroutine
+// 里做，所以真正改 PlayerState 的那一步不需要任何锁。
+//
+// 每个请求都要投回执。回执通道由 ApplyChoice 缓冲 1，这里非阻塞写，
+// 即使调用方已经走了（超时/房间停止）也不会卡住 tick。
+func (r *Room) drainChoices() {
+	for {
+		select {
+		case req := <-r.choices:
+			pp := r.peers.at(req.slot)
+			var err error
+			if pp == nil {
+				err = errNoPeer
+			} else {
+				err = r.applyChoiceLocked(pp, req.index)
+			}
+			// 非阻塞：回执通道满意味着调用方已放弃等待，丢弃即可。
+			select {
+			case req.reply <- err:
+			default:
+			}
+		default:
+			return
+		}
+	}
+}
+
+// Reliable 返回可靠下行消息的通道，供 bridge 泵到各会话。
+//
+// room 不 import netx（分层硬约束，AGENTS.md §2.4），而可靠下行只有 bridge
+// 够得着会话。所以房间只把"要发什么"放到通道上，由 bridge 找会话去发。
+//
+// 通道由房间创建、永不关闭：关闭后 bridge 的 range 会退出，但房间停止与
+// bridge 退出之间的先后顺序没有保证，靠 ctx/done 收尾更清楚（AGENTS §2.6
+// 「不要 close 发送队列来收尾」）。
+func (r *Room) Reliable() <-chan ReliableMessage { return r.reliable }
+
 // broadcast 为每个在座玩家构建并下发一份快照。
 //
 // 非阻塞写入：sink 满说明客户端跟不上，丢这一帧比卡住整个房间好。

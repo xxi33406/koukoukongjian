@@ -18,6 +18,15 @@ var (
 	ErrRoomStopped = errors.New("room: 房间已停止")
 	// ErrJoinTimeout 表示加入请求排队后迟迟没被处理。
 	ErrJoinTimeout = errors.New("room: 加入超时")
+	// ErrNotChoosing 表示这个玩家当前不在技能选择窗口里。
+	ErrNotChoosing = errors.New("room: 当前没有待选的技能")
+	// ErrChoiceOutOfRange 表示选择下标不在候选列表范围内。
+	ErrChoiceOutOfRange = errors.New("room: 选择下标越界")
+	// ErrChoiceTimeout 表示选择请求排队后迟迟没被 tick 循环处理。
+	//
+	// 它不是"玩家超时"，而是"房间没有响应"——正常路径下 tick 50ms 一次，
+	// 请求在下一个 tick 就被消费。
+	ErrChoiceTimeout = errors.New("room: 选择请求处理超时")
 )
 
 // InputCommand 是一次玩家输入。

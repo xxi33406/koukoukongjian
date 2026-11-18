@@ -44,7 +44,31 @@ type netBridge struct {
 	mu sync.Mutex
 	// peers 记录每个会话对应的玩家状态。
 	peers map[uint64]*clientPeer
+
+	// choices 是待应用的技能选择队列。
+	//
+	// 不能在 OnReliable 里直接调 room.ApplyChoice：netx 服务端只有一个
+	// 读 goroutine（server.go 的 dispatch 循环），所有会话的所有包都在
+	// 它上面串行分发。ApplyChoice 要等 tick 循环回执（正常 0~50ms，
+	// 故障时到 1 秒上限），在那上面等，整个服务端的收包——包括其他
+	// 玩家的输入——都会跟着停。所以这里只做非阻塞投递，由一个专门的
+	// worker 串行应用。
+	choices chan choiceApply
 }
+
+// choiceApply 是一条待应用的技能选择。
+type choiceApply struct {
+	session *netx.Session
+	slot    int
+	index   int
+}
+
+// choiceQueueSize 是技能选择队列的容量。
+//
+// 玩家一次升级只产生一条选择，四条座位同时选也才 4 条；留 16 是给
+// "点了又改主意连点几下"的余量。队列满时丢弃最合理：选择是幂等键控的
+// 低频操作，而且窗口超时会给没选上的人兜底。
+const choiceQueueSize = 16
 
 // clientPeer 是一个会话在网桥侧的记录。
 type clientPeer struct {
@@ -77,14 +101,23 @@ type clientPeer struct {
 
 // newNetBridge 创建网桥。
 func newNetBridge(ctx context.Context, r *room.Room, cfg *config.Config, log *slog.Logger) *netBridge {
-	return &netBridge{
-		r:     r,
-		cfg:   cfg,
-		log:   log,
-		token: newTokenIssuer(),
-		ctx:   ctx,
-		peers: make(map[uint64]*clientPeer),
+	b := &netBridge{
+		r:       r,
+		cfg:     cfg,
+		log:     log,
+		token:   newTokenIssuer(),
+		ctx:     ctx,
+		peers:   make(map[uint64]*clientPeer),
+		choices: make(chan choiceApply, choiceQueueSize),
 	}
+	// 可靠下行的泵：房间只把"要发什么"投进通道，找会话是网桥的事
+	// （room 不 import netx，AGENTS.md §2.4）。放在构造函数里起，与
+	// OnConnect 等回调谁先到无关，避免"第一条消息到达时泵还没起"。
+	b.wg.Add(1)
+	go b.pumpReliable()
+	b.wg.Add(1)
+	go b.pumpChoices()
+	return b
 }
 
 // OnConnect 在新会话建立时调用。
@@ -125,6 +158,17 @@ func (b *netBridge) OnReliable(s *netx.Session, payload []byte) {
 		b.handleHello(s, body.Hello)
 	case *proto.Envelope_JoinRoom:
 		b.handleJoinRoom(s, body.JoinRoom)
+	case *proto.Envelope_ChooseSkill:
+		// 技能三选一必须走可靠通道：漏一条玩家就永远不知道自己在等什么，
+		// 只能等窗口超时随机装一个。它也不像输入那样是覆盖式数据——选 A
+		// 和选 B 是不同的事实，不能只保留最后一条。
+		b.handleChooseSkill(s, body.ChooseSkill)
+	case *proto.Envelope_Interact:
+		// M4 只留汇合点：拾取物在 Task 9、背包在 Task 10，那时这里再
+		// 接 room 的交互队列。现在不静默丢弃，打 Debug 便于联调时看到
+		// 客户端已经在按了。
+		b.log.Debug("交互请求（M4 尚未接线）",
+			"session", s.ID(), "kind", body.Interact.GetKind())
 	default:
 		b.log.Debug("可靠通道上未处理的消息类型", "session", s.ID())
 	}
@@ -271,6 +315,135 @@ func (b *netBridge) pumpSnapshots(s *netx.Session, sink chan []byte) {
 			}
 		case <-s.Done():
 			return
+		case <-b.ctx.Done():
+			return
+		}
+	}
+}
+
+// pumpReliable 把房间的可靠下行队列泵到各会话上。
+//
+// 为什么要有这一层：room 包不 import netx（分层硬约束，AGENTS.md §2.4），
+// 拿不到 *netx.Session，而 SendReliable 只有会话有。反过来让 room 直接
+// 持有发送函数又会让回调在 tick goroutine 上阻塞（SendReliable 窗口满时
+// 返回 false，但会话写队列的竞争与重传全在 netx 内部）。所以房间只投
+// "座位号 + 字节"，找会话、发、以及发失败后的退避都在这里。
+//
+// 找不到座位或会话已关就直接丢：玩家已经不在了，重试没有意义。
+func (b *netBridge) pumpReliable() {
+	defer b.wg.Done()
+	for {
+		select {
+		case msg, ok := <-b.r.Reliable():
+			if !ok {
+				// 房间侧目前永不关闭这个通道（见 room.Reliable 注释），
+				// 这一支是给未来真关掉时的防御：不判 ok 会读到零值
+				// 消息并永远空转。
+				return
+			}
+			if s := b.sessionForSlot(msg.Slot); s != nil {
+				b.sendReliableWithRetry(s, msg.Data)
+			}
+		case <-b.ctx.Done():
+			return
+		}
+	}
+}
+
+// sessionForSlot 找座位号对应的会话。锁内只取指针，发送在锁外做。
+func (b *netBridge) sessionForSlot(slot int) *netx.Session {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for _, cp := range b.peers {
+		if cp.joined && cp.slot == slot && cp.session != nil {
+			return cp.session
+		}
+	}
+	return nil
+}
+
+// sendReliableWithRetry 发送一条可靠下行消息，短暂拥塞时重试几次。
+//
+// 为什么需要重试：SendReliable 在"可靠窗口满"时返回 false，那种失败是
+// 瞬时的——下一两个 tick 里对端的 ack 到了窗口就会松开。不重试的话一条
+// 技能候选会因为几百毫秒的抖动直接丢掉。
+//
+// 为什么不无限重试：这个 goroutine 是全局共享的，卡在一条消息上会让
+// 其他玩家的候选一起堵住。重试 3 次（约 60ms）已覆盖瞬时拥塞；再失败就
+// 交给窗口超时兜底——玩家仍会自动获得一个技能，只是没得选。
+//
+// 不做窗口内周期重发，理由同上：周期重发会把"没收到"变成"收到十几条
+// 列表"，客户端会反复弹窗，而最终仍由超时收敛。
+func (b *netBridge) sendReliableWithRetry(s *netx.Session, data []byte) {
+	const attempts = 3
+	const backoff = 20 * time.Millisecond
+	for i := 0; i < attempts; i++ {
+		if s.SendReliable(data) {
+			return
+		}
+		select {
+		case <-s.Done():
+			return
+		case <-b.ctx.Done():
+			return
+		case <-time.After(backoff):
+		}
+	}
+	b.log.Debug("可靠下行重试后仍失败，交给窗口超时兜底", "session", s.ID())
+}
+
+// handleChooseSkill 把玩家的技能选择排进队列。
+//
+// 这里绝不能直接调 room.ApplyChoice。原因有两条，任一条都足够致命：
+//
+//  1. 本函数跑在 netx 服务端唯一的读 goroutine 上（server.go:249 的
+//     dispatch 循环串行分发所有会话的所有包）。ApplyChoice 要等 tick
+//     循环回执，正常 0~50ms、故障时到 1 秒上限；在这里等，全场收包
+//     一起停。
+//  2. 也不能改成"起个 goroutine 再等"：那让每个选择包换来一个 goroutine，
+//     一个连点鼠标的客户端就能把服务端堆爆。所以是固定 worker + 有界队列。
+//
+// 锁内只取座位号，投递也在锁外——虽然投递本身不阻塞，但没必要占锁。
+func (b *netBridge) handleChooseSkill(s *netx.Session, msg *proto.ChooseSkill) {
+	b.mu.Lock()
+	cp, ok := b.peers[s.ID()]
+	var slot int
+	var joined bool
+	if ok {
+		slot, joined = cp.slot, cp.joined
+	}
+	b.mu.Unlock()
+
+	if !ok || !joined || slot < 0 {
+		b.log.Debug("未加入的会话发来技能选择", "session", s.ID())
+		return
+	}
+
+	select {
+	case b.choices <- choiceApply{session: s, slot: slot, index: int(msg.GetChoiceIndex())}:
+	default:
+		b.log.Debug("技能选择队列满，丢弃", "session", s.ID(), "slot", slot)
+	}
+}
+
+// pumpChoices 串行应用技能选择。
+//
+// 串行是刻意的：同一个玩家的两次选择必须按到达顺序应用，否则"先选 A
+// 再选 B"可能变成先 B 后 A，槽位里的技能与玩家看到的最后选择不一致。
+// 队列长度与玩家数同量级，串行处理不会成为瓶颈。
+func (b *netBridge) pumpChoices() {
+	defer b.wg.Done()
+	for {
+		select {
+		case req := <-b.choices:
+			if err := b.r.ApplyChoice(req.slot, req.index); err != nil {
+				// 不在窗口里、下标越界都是客户端行为问题（窗口过期、
+				// 与服务端列表不同步），不是服务端故障；Debug 足够，
+				// 免得误点刷屏。
+				b.log.Debug("技能选择被拒绝",
+					"session", req.session.ID(), "slot", req.slot,
+					"index", req.index, "err", err)
+			}
 		case <-b.ctx.Done():
 			return
 		}

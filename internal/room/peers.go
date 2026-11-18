@@ -1,6 +1,7 @@
 package room
 
 import (
+	"koukoukongjian/internal/game/build"
 	"koukoukongjian/internal/game/world"
 	"koukoukongjian/internal/snapshot"
 )
@@ -48,6 +49,25 @@ type peer struct {
 	queued int
 	// dropped 是因为 sink 满而丢掉的快照数。
 	dropped uint64
+
+	// pendingChoices 是服务端发出去、还在等玩家选的候选。
+	//
+	// 存在这里而不是随消息发完就丢：超时随机、以及客户端因为丢包没收到
+	// 候选时，唯一的补救是把服务端记着的这份再发一次。它同时也是
+	// ChooseSkill.choice_index 的索引空间——客户端选的下标指向的是这一次
+	// 下发的列表，不是技能表，所以顺序必须与下发时完全一致（不要排序）。
+	pendingChoices []build.Skill
+	// choiceDeadline 是决策截止 tick（w.Tick 的相对时刻，用 room 的 tick 基准）。
+	//
+	// 用 tick 而不是墙钟时间：超时判定发生在 tick 循环里，"再过 N 个 tick"
+	// 精确可复现；用 time.Now 会让同一份回放在快慢机器上超时点不同。
+	choiceDeadline uint32
+	// awaitingChoice 表示这个玩家当前处在选择窗口里（窗口内无敌）。
+	//
+	// 单独一个布尔值而不是靠 len(pendingChoices) > 0 推断：选完之后候选与
+	// 窗口是两个独立的生命周期——池子耗尽时会有"开了窗口但没有候选"的
+	// 情况，用长度推断就会把它当成"不在窗口里"，无敌永远不开。
+	awaitingChoice bool
 }
 
 // peers 管理四个座位。

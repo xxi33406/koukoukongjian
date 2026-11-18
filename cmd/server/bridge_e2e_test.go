@@ -5,10 +5,12 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"sync"
 	"testing"
 	"time"
 
 	"koukoukongjian/internal/config"
+	"koukoukongjian/internal/game/world"
 	"koukoukongjian/internal/netx"
 	"koukoukongjian/internal/proto"
 	"koukoukongjian/internal/room"
@@ -25,14 +27,31 @@ type e2eHarness struct {
 
 func startE2E(t *testing.T) *e2eHarness {
 	t.Helper()
-
 	// HubCount=0 关地图：e2e 断言的是"输入 → 玩家位移"这条传输链路，
 	// 生成的墙会把玩家困在出生据点里，位移断言就与链路无关地失败。
+	return startE2EWith(t, func(cfg *config.Config) { cfg.Map.HubCount = 0 }, nil)
+}
+
+// startE2EWith 是带钩子的版本：tweak 在 room.New 之前改配置，setup 在
+// r.Run 之前改世界（摆怪、调成长曲线）。
+//
+// 两个钩子的时机不能提前也不能推后：配置必须在 room.New 之前，因为房间
+// 把 cfg.Progression 的指针抄进了 w.Prog；世界必须在 Run 之前，因为
+// Run 之后 *world.World 归 tick goroutine 独占，测试 goroutine 再碰就是
+// 数据竞争（AGENTS.md §2.5）。
+func startE2EWith(t *testing.T, tweak func(*config.Config), setup func(*room.Room)) *e2eHarness {
+	t.Helper()
+
 	cfg := config.Default()
-	cfg.Map.HubCount = 0
+	if tweak != nil {
+		tweak(cfg)
+	}
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 
 	r := room.New(cfg, log, room.Options{ID: "e2e", Seed: 42})
+	if setup != nil {
+		setup(r)
+	}
 
 	conn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
 	if err != nil {
@@ -303,4 +322,193 @@ func TestInputOverSnapshotChannelMovesPlayer(t *testing.T) {
 		t.Fatalf("往 +X 推了 0.6 秒，位置从 %.2f 变成 %.2f，期望变大（输入没被处理）",
 			before.x, after.x)
 	}
+}
+
+// sendAttackFrames 持续按"朝 +X 瞄准 + 按住攻击"发输入，直到 stop 关闭。
+//
+// 走快照通道（与真实客户端一致）：输入是覆盖式数据，可靠通道上会被队头
+// 阻塞连带延迟，见 TestReliableChannelRejectsInput。
+func sendAttackFrames(t *testing.T, c *netx.Client) (stop func()) {
+	t.Helper()
+
+	done := make(chan struct{})
+	var once sync.Once
+	stop = func() { once.Do(func() { close(done) }) }
+	t.Cleanup(stop)
+
+	go func() {
+		tick := uint32(1)
+		for {
+			select {
+			case <-done:
+				return
+			default:
+			}
+			input, err := proto.Marshal(&proto.Envelope{
+				Body: &proto.Envelope_Input{Input: &proto.Input{
+					ClientTick: tick,
+					Frames: []*proto.InputFrame{{
+						Tick: tick, MoveX: 0, MoveY: 0,
+						AimX: 1000, AimY: 0, Buttons: 1, // 1 = 攻击
+					}},
+				}},
+			})
+			if err != nil {
+				return
+			}
+			c.SendSnapshot(input)
+			tick++
+			time.Sleep(16 * time.Millisecond)
+		}
+	}()
+	return stop
+}
+
+// waitSelfInvuln 等一份自身快照，其无敌位等于 want。
+func waitSelfInvuln(t *testing.T, c *netx.Client, want bool, what string) *proto.PlayerSelf {
+	t.Helper()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		raw := c.RecvSnapshot(200 * time.Millisecond)
+		if raw == nil {
+			continue
+		}
+		var env proto.Envelope
+		if err := proto.Unmarshal(raw, &env); err != nil {
+			continue
+		}
+		body, ok := env.Body.(*proto.Envelope_Snapshot)
+		if !ok || body.Snapshot == nil || body.Snapshot.Self == nil {
+			continue
+		}
+		self := body.Snapshot.Self
+		got := self.Flags&uint32(world.PlayerFlagInvulnerable) != 0
+		if got == want {
+			return self
+		}
+	}
+	t.Fatalf("等自身无敌位 = %v 超时（%s）", want, what)
+	return nil
+}
+
+// TestChooseSkillRoundTrip 验证可靠下行与可靠上行这两条的完整接线：
+// 房间发候选 → 网桥泵到会话 → 客户端收到 SkillChoices → 客户端回
+// ChooseSkill → 网桥转交 room.ApplyChoice → tick 循环装技能并撤无敌。
+//
+// 这条测试是"可靠下行到底通不通"的唯一实证。只测 room 内部（
+// internal/room/progression_test.go）证明不了网桥那一跳：房间把消息投进
+// 通道就算成功，而真正把它塞进会话的是 bridge 的 pumpReliable；那一跳
+// 断了，房间侧的测试全绿、线上却永远收不到候选。
+func TestChooseSkillRoundTrip(t *testing.T) {
+	var spawnAt world.Vec2
+
+	h := startE2EWith(t,
+		func(cfg *config.Config) {
+			cfg.Map.HubCount = 0
+			// 20 点经验刚好够从 1 级升到 2 级（ExpBase=20），一发子弹
+			// 打死的怪就是一次升级。
+			cfg.Progression.KillExp = 20
+			// 窗口 8 秒（160 tick）远大于测试的 5 秒观察窗：这样"无敌被撤掉"
+			// 只可能是玩家真的选了技能，不可能是超时兜底。窗口设 3 秒时
+			// 超时路径也会在观察窗内撤掉无敌，断言就分不清两条路径。
+			cfg.Progression.SkillChoiceWindowS = 8
+		},
+		func(r *room.Room) {
+			// room.spawnPoint 是包私有的，cmz/server 够不到；无图世界的
+			// slot 0 出生点是"世界中心左上方 1.5 m"，这里按同一公式算。
+			// 这段重复不提取到 room 的导出 API 是有意的：出生点公式属于
+			// 房间实现细节，为测试多开一个导出方法会让它变成公共契约。
+			w := r.World.Terrain.WorldWidth()
+			h := r.World.Terrain.WorldHeight()
+			self := world.V(-1.5+w/2, -1.5+h/2)
+			spawnAt = world.V(self.X+3, self.Y)
+			id, m := r.World.Monsters.Spawn()
+			m.HP, m.MaxHP = 5, 5
+			m.Radius = 0.4
+			m.Pos = spawnAt
+			_ = id
+		})
+
+	c := dialE2E(t, h.addr, "chooser")
+	sendAttackFrames(t, c)
+
+	choices := waitEnvelope(t, c, "SkillChoices", func(e *proto.Envelope) bool {
+		_, ok := e.Body.(*proto.Envelope_SkillChoices)
+		return ok
+	})
+	list := choices.Body.(*proto.Envelope_SkillChoices).SkillChoices
+	if list.GetLevel() != 2 {
+		t.Fatalf("候选里的等级 = %d，期望 2（打死了那只 5 血的怪）", list.GetLevel())
+	}
+	if len(list.GetChoices()) != 3 {
+		t.Fatalf("候选数量 = %d，期望 3", len(list.GetChoices()))
+	}
+
+	// 先确认窗口真的开着（无敌位在快照里为 1）。少了这一步，下面"等无敌
+	// 变 false"会被窗口期第一帧就满足——那一帧本来就还没开或已开过，测试
+	// 永远绿，连 ChooseSkill 被整个丢掉都发现不了（实测：把桥里的转交
+	// 删掉，本用例照样 PASS）。
+	waitSelfInvuln(t, c, true, "升级后窗口内应为无敌")
+
+	// 选第一个，然后必须观察到无敌位被撤掉——那是"房间真的处理了这一条
+	// ChooseSkill"的证据。窗口 8 秒、观察时限 5 秒，靠时间差排除超时路径。
+	pick, err := proto.Marshal(&proto.Envelope{
+		Body: &proto.Envelope_ChooseSkill{ChooseSkill: &proto.ChooseSkill{ChoiceIndex: 0}},
+	})
+	if err != nil {
+		t.Fatalf("编码 ChooseSkill 失败：%v", err)
+	}
+	if !c.Send(pick) {
+		t.Fatal("发送 ChooseSkill 失败")
+	}
+
+	waitSelfInvuln(t, c, false, "选了技能之后无敌应立刻撤掉")
+}
+
+// TestInteractIsAcceptedButIgnored 验证 Interact 在 M4 不会打崩连接。
+//
+// 背包与拾取是 Task 9/10，这里只有"收到并忽略"这条路。若 OnReliable 漏了
+// 这个 case，消息会落到 default 分支——行为一样，所以断言只能取"连接仍
+// 可用"，真正守住的是"不要因为未实现就 panic 或断开"。
+func TestInteractIsAcceptedButIgnored(t *testing.T) {
+	h := startE2E(t)
+	c := dialE2E(t, h.addr, "interactor")
+
+	msg, err := proto.Marshal(&proto.Envelope{
+		Body: &proto.Envelope_Interact{Interact: &proto.Interact{Kind: 1}},
+	})
+	if err != nil {
+		t.Fatalf("编码 Interact 失败：%v", err)
+	}
+	if !c.Send(msg) {
+		t.Fatal("发送 Interact 失败")
+	}
+
+	// 连接还活着：Ping 能收到 Pong。
+	ping, err := proto.Marshal(&proto.Envelope{
+		Body: &proto.Envelope_Ping{Ping: &proto.Ping{ClientTimeNs: 42}},
+	})
+	if err != nil {
+		t.Fatalf("编码 Ping 失败：%v", err)
+	}
+	if !c.SendSnapshot(ping) {
+		t.Fatal("发送 Ping 失败")
+	}
+	// 连接还活着：快照通道还能收到 Pong（或至少还能收到快照）。
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		raw := c.RecvSnapshot(200 * time.Millisecond)
+		if raw == nil {
+			continue
+		}
+		var env proto.Envelope
+		if err := proto.Unmarshal(raw, &env); err != nil {
+			continue
+		}
+		if pong, ok := env.Body.(*proto.Envelope_Pong); ok && pong.Pong.ClientTimeNs == 42 {
+			return
+		}
+	}
+	t.Fatal("Interact 之后等 Pong 超时：这条消息可能把会话读循环卡住了")
 }

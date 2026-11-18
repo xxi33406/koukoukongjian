@@ -10,10 +10,12 @@ import (
 
 	"koukoukongjian/internal/config"
 	"koukoukongjian/internal/game/ai"
+	"koukoukongjian/internal/game/build"
 	"koukoukongjian/internal/game/fog"
 	"koukoukongjian/internal/game/mapgen"
 	"koukoukongjian/internal/game/systems"
 	"koukoukongjian/internal/game/world"
+	"koukoukongjian/internal/proto"
 )
 
 // Room 是一局游戏。
@@ -64,6 +66,22 @@ type Room struct {
 	inputs chan peerInput
 	// leaves 是等待处理的离开请求。
 	leaves chan leaveRequest
+	// choices 是等待处理的技能选择请求。
+	//
+	// 为什么必须走 channel：ApplyChoice 由 bridge 的网络 goroutine 调用，
+	// 而 World 归 tick goroutine 独占（AGENTS.md §2.5）。直接改实体的
+	// SkillPassive 就是跨 goroutine 写，-race 会报，且表现为"偶尔少装一个
+	// 技能"这种查不出的偶发。与 inputs/joins 同款：网络侧投递，tick 里
+	// 非阻塞消费。
+	choices chan choiceRequest
+	// reliable 是房间要经可靠通道下发的消息（技能候选这类漏了就没法补救
+	// 的消息）。room 不 import netx（分层硬约束），所以这里只出一个通道，
+	// 由 bridge 那边泵到会话的可靠通道上。
+	//
+	// 容量 MaxSlots×4：一次升级一个玩家一条消息，加上窗口内再升级的追加
+	// 下发，最坏情况是几 tick 内积压几条。满了就丢并记日志——丢掉的候选
+	// 不是死局：窗口到期会自动随机装一个。
+	reliable chan ReliableMessage
 	// events 是这一 tick 攒下的伤害/击杀事件，M2 只攒不发（快照带上它
 	// 属于 M3 的 UI 反馈）。每个 tick 开头用 [:0] 清空以复用底层数组。
 	events []world.DamageEvent
@@ -78,6 +96,15 @@ type Room struct {
 	// wavesEnabled 是波次开关的落定值（Options 互斥裁定后的结果）。
 	// Task 10 波次系统接线前只有声明无消费；先落字段，接线时直接读。
 	wavesEnabled bool
+	// pendingLevelUps 是本 tick 子步里升了级的玩家，攒到子步循环结束后
+	// 统一处理（发候选 + 开无敌窗口）。
+	//
+	// 为什么不在 subStep 里当场处理：子步是高频物理路径（SubSteps=3），
+	// 而"发候选"要生成随机数、要写 peer 状态、要编码消息。放在子步里
+	// 意味着同一 tick 升一级可能被处理三次（每子步一次），候选被重复
+	// 下发、窗口被重置三次。攒起来在 tick 级处理一次，与 AI/波次/fire
+	// 同款"世界级结算"节拍。
+	pendingLevelUps []world.EntityID
 	// nextSnapshot 是本 tick 生成好、待网络层取走的快照。
 	// 这里不用它——快照直接写进每个 peer 的 sink。保留字段会误导，故无。
 
@@ -98,6 +125,33 @@ type leaveRequest struct {
 	slot  int
 	reply chan error
 }
+
+// choiceRequest 是请求应用一次技能选择。
+//
+// reply 必须缓冲 1：tick 循环投回执时非阻塞，若调用方刚好被 ctx 取消/房间
+// 停止放走，tick 循环不能因此卡住（与 JoinRequest.Reply 同款约定）。
+type choiceRequest struct {
+	slot  int
+	index int
+	reply chan error
+}
+
+// ReliableMessage 是房间要经可靠通道下发的一条消息。
+//
+// Slot 是收件座位号；Data 是已编码的 Envelope。room 不碰会话，bridge 按
+// Slot 找到对应的 *netx.Session 再 SendReliable——分层上 room 不能 import
+// netx（AGENTS.md §2.4），而可靠下行只有 bridge 够得着。
+type ReliableMessage struct {
+	Slot int
+	Data []byte
+}
+
+// choiceReplyTimeout 是 ApplyChoice 等待 tick 循环处理的上限。
+//
+// 取 1 秒 = 20 个 tick（20Hz）：正常路径下请求在下一个 tick 就被消费，
+// 差了两个数量级。它只在 tick 循环卡死时触发，用来保证 bridge 的会话
+// 读 goroutine 不会永久阻塞——那会让该会话连断线都发现不了。
+const choiceReplyTimeout = time.Second
 
 // Options 是创建房间的参数。
 type Options struct {
@@ -135,6 +189,8 @@ func New(cfg *config.Config, log *slog.Logger, opts Options) *Room {
 		joins:        make(chan JoinRequest, MaxSlots*2),
 		inputs:       make(chan peerInput, MaxSlots*32),
 		leaves:       make(chan leaveRequest, MaxSlots),
+		choices:      make(chan choiceRequest, MaxSlots*4),
+		reliable:     make(chan ReliableMessage, MaxSlots*8),
 		done:         make(chan struct{}),
 	}
 	r.World.Grid.SetBruteThreshold(cfg.Space.SpatialBruteThreshold)
@@ -323,9 +379,11 @@ func (r *Room) tick() {
 	//    events 用 [:0] 清空而不是 = nil：前者复用底层数组，后者每 tick
 	//    分配一次，20Hz 下就是每秒 20 次无谓分配。
 	r.events = r.events[:0]
+	r.pendingLevelUps = r.pendingLevelUps[:0]
 	r.drainJoins()
 	r.drainLeaves()
 	r.drainInputs()
+	r.drainChoices()
 
 	// 1. 重建空间索引（每 tick 一次，不是每子步）。
 	w.Grid.Rebuild(w.Monsters, w.Bullets, w.Players)
@@ -361,6 +419,22 @@ func (r *Room) tick() {
 	for sub := 0; sub < r.subSteps; sub++ {
 		r.subStep(sub)
 	}
+
+	// 3.0 限时效果递减（M4 Task 5 接线）：每 tick 恰好一次，与波次/AI 同款
+	//     "世界级结算"节拍。dt 用 tick 的固定时长而不是真实耗时，理由同
+	//     fire()。放子步之外是硬要求：TickBuffs 递减的是秒数倒计时与技能
+	//     冷却，接进子步会让 SubSteps=3 时以三倍速走完，表现为"技能冷却
+	//     只要三分之一时间"——手感问题，不会报错，极难定位。
+	r.tickBuffs()
+
+	// 3.1 升级结算：本 tick 子步里升级的玩家在这里统一发候选、开无敌窗口。
+	//     攒到 tick 级处理而不是在 subStep 里当场做，理由见 pendingLevelUps
+	//     字段注释（子步高频，会重复开窗、重复下发）。
+	r.handleLevelUps(r.pendingLevelUps)
+
+	// 3.2 选择超时：窗口到期自动随机装一个。放在升级结算之后，本 tick 刚
+	//     开的窗口 deadline 至少是 Tick+1，不会被这一行的判定误伤。
+	r.tickSkillChoiceTimeouts()
 
 	// 3. 生成：开火属于生成，放在子步循环之外。
 	// 理由见 combat-design-v0.1.md:77——发射频率以 tick 为单位，
@@ -425,6 +499,15 @@ func (r *Room) subStep(sub int) {
 	r.events = append(r.events, inc...)
 	r.applyAggro(inc)
 
+	// 2.5.5 击杀经验：必须在 Reap 之前——Reap 会 Kill 槽位并清零数据，
+	//       之后 w.Monsters.Get(dst) 就返回 nil，拿不到死亡位置；而
+	//       GrantKillExp 要按死亡位置算 20 m 分账半径。Reap 自己产出的
+	//       击杀事件也不带位置（Src=InvalidID、只有 Dst），拿不到。
+	//       所以扫 ApplyHits 的增量里的 IsKill（那是"这一发把它打死了"），
+	//       在回收之前取 Pos。中毒/环境伤害这类非 ApplyHits 来源的击杀
+	//       在 M4 还没有，缺口记在汇报的已知限制里。
+	r.grantKillExp(inc)
+
 	// 2.6 死亡清理：回收 + 世代 +1
 	r.events = append(r.events, systems.Reap(w)...)
 }
@@ -458,6 +541,359 @@ func (r *Room) applyAggro(evs []world.DamageEvent) {
 		if i := int(ev.Src.Index()); i < len(m.AggroDmg) {
 			m.AggroDmg[i] += ev.Amount
 		}
+	}
+}
+
+// grantKillExp 给击杀点附近的玩家分经验，把升级的玩家攒进 pendingLevelUps。
+//
+// 为什么挂在 ApplyHits 的增量上、而不是 Reap 的击杀事件上：Reap 会先 Kill
+// 槽位再产出事件，那一瞬间怪的 Pos 已被清零、Get 也返回 nil，分账需要的
+// 「死亡位置」就永久丢了；而 Reap 自己的事件只有 Dst、没有位置字段，改它
+// 要动 systems 的签名。所以取 ApplyHits 里「这一发把它打死了」的那条事件
+// （Amount>0 且 IsKill），在 Reap 之前查 Pos。
+//
+// 为什么只认 IsKill：同一 tick 多颗子弹命中同一只怪时，第一发把
+// MonsterFlagDead 置上，后续几发在 ResolveDamage 里走「尸体不再吃伤害」
+// 分支、Amount 保持 0 而被 ApplyHits 过滤掉——所以一条怪只会有一条 IsKill
+// 事件，不会重复分账。
+func (r *Room) grantKillExp(inc []world.DamageEvent) {
+	if len(inc) == 0 {
+		return
+	}
+	baseExp := r.cfg.Progression.KillExp
+	if baseExp == 0 {
+		// 配成 0 等于关掉击杀经验（关卡编辑器/调试用），此时连分账半径
+		// 都不用算。
+		return
+	}
+	w := r.World
+	for _, ev := range inc {
+		if !ev.IsKill {
+			continue
+		}
+		m := w.Monsters.Get(ev.Dst)
+		if m == nil {
+			continue // 目标不是怪，或已被别的路径回收
+		}
+		r.pendingLevelUps = append(r.pendingLevelUps, systems.GrantKillExp(w, m.Pos, baseExp)...)
+	}
+}
+
+// tickBuffs 递减所有玩家的限时效果与技能冷却。
+//
+// 在 tick 里调一次（不是子步）：见 tick() 3.0 的注释。
+func (r *Room) tickBuffs() {
+	dt := 1.0 / float64(r.cfg.Server.TickRate)
+	r.World.Players.Each(func(_ world.EntityID, p *world.PlayerState) bool {
+		systems.TickBuffs(p, dt)
+		return true
+	})
+}
+
+// choiceWindowTicks 把配置里的窗口秒数换成 tick 数。
+//
+// 口径与 world.secondsToTicks 一致（+0.5 四舍五入、至少 1）：窗口在 tick
+// 循环里按 tick 数判定，配置却以秒书写，两套单位的换算只能有一处。
+// 下限 1 是因为 0 会让 deadline 等于当前 tick，同一 tick 的下一行就超时，
+// 玩家永远看不到候选。
+func (r *Room) choiceWindowTicks() uint32 {
+	n := uint32(r.cfg.Progression.SkillChoiceWindowS*float64(r.cfg.Server.TickRate) + 0.5)
+	if n == 0 {
+		n = 1
+	}
+	return n
+}
+
+// handleLevelUps 给刚升级的玩家发三选一候选，并开无敌窗口。
+//
+// 无敌用 PlayerFlagInvulnerable 而不是 InvulnLeft，理由是语义而非偏好：
+// world/damage.go 的判定注释已经把两条路径分好工——InvulnLeft 是
+// 「技能给的限时无敌（秒）」，Flags 里的位是「复活/出生保护这类由房间
+// 逻辑给的状态」。选择窗口是房间规则（停下来做选择不该被怪打死），
+// 不是玩家拥有的技能，所以走 Flag。
+//
+// 第二条理由是实现层面的：InvulnLeft 由 systems.TickBuffs 每 tick 递减，
+// 窗口的结束时刻就取决于「递减了多少次」，而这个数字在窗口被重置（窗口
+// 内又升一级）时不好对齐；Flag 由房间在窗口结束那一刻显式清除，窗口长度
+// 与 choiceDeadline 是同一个 tick 基准，不会出现「显示还有 1 秒，实际已经
+// 不无敌」的错位。
+//
+// 两个动作都改世界状态，所以只允许在 tick goroutine 里调用。
+func (r *Room) handleLevelUps(leveled []world.EntityID) {
+	if len(leveled) == 0 {
+		return
+	}
+	w := r.World
+	window := r.choiceWindowTicks()
+
+	// 去重：同一 tick 打死两只怪时 GrantKillExp 会为同一个玩家返回两次
+	// （每次击杀各返回一次）。不去重就会连开两次窗口、连发两条候选，
+	// 玩家看到两份列表、索引空间还互相打架。
+	//
+	// 用切片线性查重而不用 map：玩家最多 4 个，代价可忽略；而 map 的
+	// 遍历顺序随机，一旦有人日后在这里改成「遍历去重结果」就会让模拟
+	// 不可复现（AGENTS.md §2.6 禁止在模拟路径里遍历 map）。这里不遍历
+	// map，但省掉它更省心。
+	var done []world.EntityID
+	for _, id := range leveled {
+		dup := false
+		for _, seen := range done {
+			if seen == id {
+				dup = true
+				break
+			}
+		}
+		if !dup {
+			done = append(done, id)
+		}
+	}
+
+	for _, id := range done {
+		p := r.peerByID(id)
+		if p == nil {
+			continue // 实体活着但没有对应座位（M5 的鬼魂会这样）
+		}
+		ent := w.Players.Get(id)
+		if ent == nil || ent.State != world.PlayerAlive {
+			continue
+		}
+
+		choices := build.GenerateChoices(w, assignedSkillIDs(ent, p), 3)
+		if len(choices) == 0 {
+			// 技能池耗尽（8 条全装上了）：如实跳过，不开窗口。开一个
+			// 没有候选的窗口只会让玩家白等 5 秒无敌，且客户端的列表
+			// 是空的、点了也没反应。数值奖励留给 M5 的拾取物，这里
+			// 不临时发明一套。
+			r.log.Debug("技能池已耗尽，本次升级不发候选",
+				"slot", p.slot, "level", ent.Level)
+			continue
+		}
+
+		// 窗口内又升级：追加到现有候选并重置窗口，而不是丢掉这一次。
+		// 丢掉意味着玩家多打了一只怪、多升了一级，却什么也没得到。
+		p.pendingChoices = append(p.pendingChoices, choices...)
+		p.choiceDeadline = w.Tick + window
+		p.awaitingChoice = true
+
+		ent.Flags |= world.PlayerFlagInvulnerable
+		// 升级会改 Level/MaxHP，属性重算的统一入口是 RecomputeDerived
+		// （Task 5 的账）：AddExp 里换了一种算法加 HP 上限，两条路径
+		// 数值一致但必须由它收口，否则日后加新的被动就会漏乘。
+		systems.RecomputeDerived(ent)
+
+		r.sendSkillChoices(p, window)
+	}
+}
+
+// peerByID 按实体 ID 找座位。
+func (r *Room) peerByID(id world.EntityID) *peer {
+	var found *peer
+	r.peers.each(func(p *peer) {
+		if p.id == id {
+			found = p
+		}
+	})
+	return found
+}
+
+// tickSkillChoiceTimeouts 处理选择窗口超时：随机装一个候选。
+//
+// 超时必须有兜底，理由不是"玩家懒得选"：候选走可靠通道下发，但客户端可能
+// 崩了、可能一直不选、可能根本没收到。没有超时的话玩家会永久停在无敌状态
+// 且永远不再成长——一个既无敌又不成长的玩家会破坏整局平衡，而症状（某个
+// 人不掉血也不升级）看起来像网络问题，很难联想到是"没做超时"。
+func (r *Room) tickSkillChoiceTimeouts() {
+	w := r.World
+	r.peers.each(func(p *peer) {
+		if !p.awaitingChoice {
+			return
+		}
+		// 回绕安全的比较，口径与 cmd/server/bridge.go 的 tickAfter 一致：
+		// uint32 直接比大小会在 2^32 tick（20Hz 下约 6.8 年）后失效，
+		// 而 int32 差值法在整个区间上单调可用。
+		if int32(w.Tick-p.choiceDeadline) < 0 {
+			return
+		}
+		n := len(p.pendingChoices)
+		if n == 0 {
+			// 只会出现在「窗口被外部清空但没清标记」的异常态。兜底把
+			// 窗口关掉，避免永久无敌。
+			r.clearChoiceWindow(p)
+			return
+		}
+		idx := 0
+		if n > 1 {
+			idx = w.RandIntn(n)
+		}
+		if err := r.applyChoiceLocked(p, idx); err != nil {
+			r.log.Warn("技能选择超时兜底失败", "slot", p.slot, "err", err)
+			r.clearChoiceWindow(p)
+		}
+	})
+}
+
+// applyChoiceLocked 把第 index 个候选装进玩家的技能槽。
+//
+// 只能在 tick goroutine 里调用（它改 PlayerState）。
+func (r *Room) applyChoiceLocked(p *peer, index int) error {
+	if !p.awaitingChoice {
+		return ErrNotChoosing
+	}
+	if index < 0 || index >= len(p.pendingChoices) {
+		return ErrChoiceOutOfRange
+	}
+	ent := r.World.Players.Get(p.id)
+	if ent == nil {
+		return errNoPeer
+	}
+
+	s := p.pendingChoices[index]
+	equipSkill(ent, s)
+	// 装上新被动必须立刻重算倍率与 HP 上限，否则被动要等到下一次升级
+	// 或复活才生效——表现是"选了强健体魄但血条没变"，玩家会以为没选上。
+	systems.RecomputeDerived(ent)
+
+	r.clearChoiceWindow(p)
+	r.log.Debug("技能选择已应用",
+		"slot", p.slot, "skill_id", s.ID, "name", s.Name, "kind", s.Kind.String())
+	return nil
+}
+
+// clearChoiceWindow 关闭选择窗口并撤掉无敌。
+//
+// 三件事必须一起做：候选列表（索引空间来源）、awaitingChoice（超时判定
+// 与再次升级的分支）、无敌标记。少任何一件都会留下不一致状态——比如只清
+// 候选不清标记，玩家会永久无敌且超时逻辑每 tick 都撞进「长度为 0」的兜底
+// 分支刷日志。
+func (r *Room) clearChoiceWindow(p *peer) {
+	p.pendingChoices = nil
+	p.awaitingChoice = false
+	p.choiceDeadline = 0
+	if ent := r.World.Players.Get(p.id); ent != nil {
+		// 只撤窗口自己给的那一位。技能的无敌走 InvulnLeft，是另一个
+		// 字段，不会被这里误清。
+		ent.Flags &^= world.PlayerFlagInvulnerable
+	}
+}
+
+// equipSkill 把技能装进第一个空槽；两槽都满时替换第二个槽位。
+//
+// M4 的取舍：没有"遗忘/替换"的界面，也没定 UI 交互（Task 10 之后才谈
+// 背包）。两槽已满时替换[1] 而不是拒绝，理由是拒绝会让玩家"升了级却
+// 什么都没有"，而替换至少让构筑能持续演进，成本只是丢掉之前那个最后
+// 装上的技能——玩家能立刻从下一次候选里看出来。
+func equipSkill(p *world.PlayerState, s build.Skill) {
+	slots := &p.SkillPassive
+	if s.Kind == build.SkillKindActive {
+		slots = &p.SkillActive
+	}
+	for i := range slots {
+		if slots[i] == 0 {
+			slots[i] = s.ID
+			return
+		}
+	}
+	slots[1] = s.ID
+}
+
+// assignedSkillIDs 收集玩家已占用的技能 ID：槽位里的 + 还在候选里没选的。
+//
+// 把 pendingChoices 也算进去，是为了让「窗口内又升一级」追加候选时不
+// 重复下发同一个技能：否则两批候选里都有技能 X，玩家选了两次就占了两个
+// 槽，而他只想要一个。
+func assignedSkillIDs(p *world.PlayerState, rp *peer) []uint16 {
+	out := make([]uint16, 0, 4+len(rp.pendingChoices))
+	for _, id := range p.SkillActive {
+		if id != 0 {
+			out = append(out, id)
+		}
+	}
+	for _, id := range p.SkillPassive {
+		if id != 0 {
+			out = append(out, id)
+		}
+	}
+	for _, s := range rp.pendingChoices {
+		out = append(out, s.ID)
+	}
+	return out
+}
+
+// sendSkillChoices 把当前候选列表经可靠通道下发给这个座位。
+func (r *Room) sendSkillChoices(p *peer, window uint32) {
+	level := uint32(1)
+	if ent := r.World.Players.Get(p.id); ent != nil {
+		level = uint32(ent.Level)
+	}
+	choices := make([]*proto.SkillChoice, 0, len(p.pendingChoices))
+	for _, s := range p.pendingChoices {
+		choices = append(choices, &proto.SkillChoice{
+			SkillId: uint32(s.ID),
+			Kind:    uint32(s.Kind),
+		})
+	}
+	r.sendReliable(p.slot, &proto.Envelope{
+		Body: &proto.Envelope_SkillChoices{SkillChoices: &proto.SkillChoices{
+			Level:       level,
+			Choices:     choices,
+			WindowTicks: window,
+		}},
+	})
+}
+
+// sendReliable 把一条消息投进可靠下行队列，由 bridge 泵到会话上。
+//
+// 队列满时丢弃：这里绝不能阻塞——调用方是 tick 循环，阻塞一 tick 就是
+// 全场卡 50ms。丢掉的候选不是死局：窗口到期会自动随机装一个，玩家损失
+// 的只是「选哪个」的权利。
+func (r *Room) sendReliable(slot int, env *proto.Envelope) {
+	data, err := proto.Marshal(env)
+	if err != nil {
+		r.log.Warn("可靠消息编码失败", "slot", slot, "err", err)
+		return
+	}
+	select {
+	case r.reliable <- ReliableMessage{Slot: slot, Data: data}:
+	default:
+		r.log.Warn("可靠下行队列满，丢弃一条消息", "slot", slot, "queue", len(r.reliable))
+	}
+}
+
+// ApplyChoice 应用玩家的技能选择。
+//
+// 由 bridge 在除 tick goroutine 之外的 goroutine 调用，所以必须走 channel
+// 投递——直接改 r.World 的 PlayerState 就是跨 goroutine 写，-race 会报，
+// 且表现为"偶尔少装一个技能"这种偶发（AGENTS.md §2.5）。
+//
+// 返回的错误区分三种情况，让 bridge 的日志有意义：不在窗口里（玩家点了
+// 但窗口已过期）、下标越界（客户端与服务器看到的列表不一致）、房间停止。
+func (r *Room) ApplyChoice(slot, choiceIndex int) error {
+	if r.stopped.Load() {
+		return ErrRoomStopped
+	}
+	req := choiceRequest{
+		slot:  slot,
+		index: choiceIndex,
+		// 必须缓冲 1：tick 循环投回执是非阻塞的，调用方若已因超时/停止
+		// 走掉，缓冲区保证 tick 循环不会卡在这里。
+		reply: make(chan error, 1),
+	}
+	select {
+	case r.choices <- req:
+	case <-r.done:
+		return ErrRoomStopped
+	}
+	select {
+	case err := <-req.reply:
+		return err
+	case <-r.done:
+		return ErrRoomStopped
+	case <-time.After(choiceReplyTimeout):
+		// 故障保护，不是正常路径：tick 50ms 一次，1 秒等于 20 个 tick，
+		// 正常处理远快于此。没有这个上限时，一旦 tick 循环卡死（比如某
+		// 个系统死循环），bridge 的会话读 goroutine 会永久阻塞在这个
+		// 调用上，那个会话就再也不处理任何消息——连断线都发现不了。
+		return ErrChoiceTimeout
 	}
 }
 
