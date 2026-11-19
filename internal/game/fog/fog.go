@@ -45,7 +45,7 @@ func (f *State) LitCount() int {
 
 // Reveal 对所有活着的玩家圆内点灯，返回本次新点亮的格索引切片。
 // 返回值复用内部 scratch——调用方必须立刻消费（塞进快照），不得持有。
-// 玩家不存活时圆不点灯；空白世界（无玩家）返回 nil。
+// 玩家不存活时圆不点灯（鬼魂是例外，见下）；空白世界（无玩家）返回 nil。
 func (f *State) Reveal(w *world.World, radius float64) []int {
 	f.scratch = f.scratch[:0]
 	if w == nil || w.Terrain == nil {
@@ -54,7 +54,14 @@ func (f *State) Reveal(w *world.World, radius float64) []int {
 	}
 	rSq := (radius + 1) * (radius + 1) // +1 格宽余量，避免浮点边缘抖动反复亮灭
 	w.Players.Each(func(_ world.EntityID, p *world.PlayerState) bool {
-		if p.State != world.PlayerAlive {
+		// 鬼魂也点灯：spec L49「可探图」。只让活人点灯的话，鬼魂走一圈
+		// 回来地图仍是黑的，"可探图"就是空话，而玩家分不清是迷雾没实现
+		// 还是"我死了所以看不见"。
+		//
+		// 倒地与掉线仍然不点灯：倒地是给"队友扶起"留的空位，掉线的人
+		// 已经不在了。它们的圆若也点灯，一个站在暗处的尸体就会替全队
+		// 开视野，那是作弊而不是可探图。
+		if p.State != world.PlayerAlive && p.State != world.PlayerGhost {
 			return true
 		}
 		cx := int(p.Pos.X) // cellSize=1；cellSize 可配时改 floor(p.X/cellSize)

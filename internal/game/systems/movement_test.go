@@ -185,15 +185,32 @@ func TestIntegrateZeroIntentStops(t *testing.T) {
 	}
 }
 
-func TestIntegrateGhostDoesNotMove(t *testing.T) {
+// 鬼魂能移动（M5 规格修订），且速度是活人的 GhostSpeedMul 倍。
+//
+// 原名 TestIntegrateGhostDoesNotMove，断言的是 M2/M4 的"非 Alive 一律清
+// Vel 返回"；M5 起鬼魂是后勤位，必须能探图（spec L49「可探图」），所以
+// 语义反转。改名而不是删掉：这条用例仍然钉着"鬼魂到底动不动"这个曾经
+// 被写错过的问题，只是答案从"不动"变成"动，且更慢"。
+func TestIntegrateGhostMoves(t *testing.T) {
 	w := newSystemsWorld(t, 1)
-	var p world.PlayerState
+	_, p := w.Players.Spawn()
 	p.State = world.PlayerGhost
+	p.HP = 100
+	p.MaxHP = 100
+	// 起点必须摆进图内空地：Pos 零值是 (0,0)，图外按墙算
+	// （Terrain.At 越界返回 TileWall），贴着 (0,0) 一步都走不动，
+	// 这条测试就会红在"撞墙"而不是"鬼魂能不能动"，掩盖真正要钉的语义。
+	p.Pos = world.V(10, 10)
 	p.MoveIntent = world.V(1, 0)
-	Integrate(&p, 0.1, w.Terrain)
+	Integrate(p, 0.1, w.Terrain)
 
-	if p.Pos.X != 0 {
-		t.Fatalf("鬼魂不该用活人速度移动，得到 x=%f", p.Pos.X)
+	moved := p.Pos.X - 10
+	if moved <= 0 {
+		t.Fatalf("鬼魂没有移动：位移 = %v，期望 > 0", moved)
+	}
+	want := PlayerSpeed * GhostSpeedMul * 0.1
+	if !approx(moved, want, 1e-9) {
+		t.Fatalf("鬼魂一个子步位移 = %v，期望 %v（PlayerSpeed × GhostSpeedMul）", moved, want)
 	}
 }
 
@@ -282,5 +299,127 @@ func TestIntegrateDiagonalFreeAreaMatchesAnalytic(t *testing.T) {
 	if !approx(p.Pos.X, wantX, 1e-9) || !approx(p.Pos.Y, wantY, 1e-9) {
 		t.Errorf("斜向空地位移 = (%.6f, %.6f)，解析值 (%.6f, %.6f)",
 			p.Pos.X, p.Pos.Y, wantX, wantY)
+	}
+}
+
+// 鬼魂能走（spec L49「可探图」），速度是活人的 GhostSpeedMul 倍。
+//
+// M5 之前 Integrate 对任何非 Alive 状态一律清 Vel 返回，鬼魂被钉死在原地。
+// spec 的鬼魂是一个"能探图、能跟随、能搬运"的后勤位，不能动就整个设计不成立。
+func TestGhostMovesSlowerThanAlive(t *testing.T) {
+	w := newSystemsWorld(t, 7)
+
+	// 两人必须从同一块图内空地出发。Spawn 留下的 Pos 是零值 (0,0)，
+	// 而 Terrain.At 对越界格返回 TileWall——(0,0) 上的玩家连第一步都
+	// 被墙挡住，比值会算成 0/0。计划原文没摆起点，照抄会得到一条
+	// "鬼魂没有移动：X = 0"的假红。
+	mk := func(state world.PlayerStateKind) (world.EntityID, *world.PlayerState) {
+		id, p := w.Players.Spawn()
+		p.State = state
+		p.HP = 100
+		p.MaxHP = 100
+		p.Pos = world.V(10, 10)
+		p.MoveIntent = world.V(1, 0)
+		return id, p
+	}
+
+	_, alive := mk(world.PlayerAlive)
+	_, ghost := mk(world.PlayerGhost)
+
+	const dt = 0.1
+	Integrate(alive, dt, w.Terrain)
+	Integrate(ghost, dt, w.Terrain)
+
+	if ghost.Pos.X <= 10 {
+		t.Fatalf("鬼魂没有移动：X = %v，起点 10", ghost.Pos.X)
+	}
+	// 用比值而不是绝对值：PlayerSpeed 是包级常量，改动它不该让这条测试失效。
+	ratio := (ghost.Pos.X - 10) / (alive.Pos.X - 10)
+	if ratio < GhostSpeedMul-0.01 || ratio > GhostSpeedMul+0.01 {
+		t.Fatalf("鬼魂/活人速度比 = %v，期望 %v", ratio, GhostSpeedMul)
+	}
+}
+
+// 鬼魂不吃技能的速度加成：常驻被动（疾行）与限时冲刺都该无效。
+//
+// 为什么单独测：Kill() 会清 SpeedBuffMul 与 SpeedBuffLeft，但 Derived.SpeedMul
+// （被动疾行）是 RecomputeDerived 算出来的常驻值，Kill 不清它（清了复活后
+// 还要重算一遍）。所以必须在 Integrate 里显式忽略，否则"死了反而跑得快"。
+func TestGhostIgnoresSpeedBuffs(t *testing.T) {
+	w := newSystemsWorld(t, 7)
+	_, p := w.Players.Spawn()
+	p.State = world.PlayerGhost
+	p.HP = 100
+	p.MaxHP = 100
+	p.Pos = world.V(10, 10) // 图内空地，见 TestGhostMovesSlowerThanAlive 的说明。
+	p.MoveIntent = world.V(1, 0)
+	p.Derived = world.PlayerDerived{SpeedMul: 1.15}
+	p.SpeedBuffLeft = 2.0
+	p.SpeedBuffMul = 1.8
+
+	Integrate(p, 0.1, w.Terrain)
+
+	want := 10 + PlayerSpeed*GhostSpeedMul*0.1
+	if !approx(p.Pos.X, want, 1e-9) {
+		t.Fatalf("鬼魂位移后 X = %v，期望 %v（不该吃任何速度加成）", p.Pos.X, want)
+	}
+	// Vel 也要一并钉住：快照下发的速度若带着加成，客户端预测会跑到
+	// 服务器前面，表现为鬼魂"贴合时抖一下再被拽回来"。
+	if !approx(p.Vel.X, PlayerSpeed*GhostSpeedMul, 1e-9) {
+		t.Fatalf("鬼魂 Vel.X = %v，期望 %v", p.Vel.X, PlayerSpeed*GhostSpeedMul)
+	}
+}
+
+// 掉线与倒地不移动：它们不是"活人"也不该享受鬼魂的特权。
+//
+// 起点同样摆进图内空地：从 (0,0) 出发的话，"不动"可能是因为撞墙而不是
+// 因为 State 判据生效，这条测试就白写了。
+func TestDisconnectedAndDownedStayPut(t *testing.T) {
+	w := newSystemsWorld(t, 7)
+	for _, st := range []world.PlayerStateKind{world.PlayerDowned, world.PlayerDisconnected} {
+		_, p := w.Players.Spawn()
+		p.State = st
+		p.HP = 100
+		p.Pos = world.V(10, 10)
+		p.MoveIntent = world.V(1, 0)
+		Integrate(p, 0.1, w.Terrain)
+		if p.Pos.X != 10 {
+			t.Fatalf("State=%d 的人位移到 %v，期望原地不动在 10", st, p.Pos.X)
+		}
+		if p.Vel != (world.Vec2{}) {
+			t.Fatalf("State=%d 的人 Vel = %+v，期望清零", st, p.Vel)
+		}
+	}
+}
+
+// 鬼魂仍然吃地形碰撞：能穿墙就等价于"死了能看全图"，是另一个维度的作弊。
+//
+// 只测"鬼魂能移动"是不够的——把 Integrate 写成鬼魂分支跳过 CircleFree
+// 也能让上面三条全绿。这条用例是那种写法的唯一拦网。
+func TestGhostStillCollidesWithWalls(t *testing.T) {
+	w := newSystemsWorld(t, 7)
+	tr := w.Terrain
+	// 在 x=12 列立一堵竖墙，鬼魂从墙左侧直直向右推。
+	for cy := 0; cy < tr.Height(); cy++ {
+		tr.Set(12, cy, world.TileWall)
+	}
+
+	_, p := w.Players.Spawn()
+	p.State = world.PlayerGhost
+	p.HP = 100
+	p.Pos = world.V(11.5, 10)
+	p.MoveIntent = world.V(1, 0)
+
+	// dt 取大一点，一步位移 0.48 m，大于圆直径 0.6 m 的一半，
+	// 逼的是"扫掠"而非只看终点的实现。
+	Integrate(p, 1.0, tr)
+
+	// 半径 0.3 → 圆心最远到 12-0.3 = 11.7（CircleFree 是粗判，格子矩形
+	// 沾到就算撞，实际会停在略早的位置）。
+	if p.Pos.X >= 12.0 {
+		t.Fatalf("鬼魂穿墙了：Pos.X = %v，墙在 x=12", p.Pos.X)
+	}
+	if p.Pos.X <= 11.5 {
+		t.Fatalf("鬼魂贴着墙却一步没走：Pos.X = %v，起点 11.5", p.Pos.X)
 	}
 }

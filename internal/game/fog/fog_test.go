@@ -70,3 +70,23 @@ func TestLitReturnsStableCopy(t *testing.T) {
 		t.Error("bitset 位语义错误")
 	}
 }
+
+// 鬼魂也要点亮迷雾：spec L49「可探图」。
+//
+// 只让活人点灯的话，鬼魂走一圈回来地图仍是黑的——"可探图"就是一句空话，
+// 而玩家分不清是"迷雾没实现"还是"我死了所以看不见"。
+func TestGhostRevealsFog(t *testing.T) {
+	cfg := config.Default()
+	w := world.NewWorld(cfg, 5)
+	f := New(w.Terrain.Width(), w.Terrain.Height())
+
+	_, p := w.Players.Spawn()
+	p.State = world.PlayerGhost
+	p.HP = 0
+	p.Pos = world.V(64, 64)
+
+	inc := f.Reveal(w, cfg.Fog.RevealRadius)
+	if len(inc) == 0 {
+		t.Fatalf("鬼魂没有点亮任何迷雾格")
+	}
+}

@@ -22,6 +22,14 @@ import (
 // M2 只做机制验证不做手感调参，等进入调参阶段（M5）再把两者一起挪进 config。
 const PlayerSpeed = 6.0
 
+// GhostSpeedMul 是鬼魂相对活人的速度倍率。
+//
+// 0.8 的取法：鬼魂是后勤位（spec L49「可探图、可跟随存活玩家」），比活人
+// 慢一点符合"不是战斗单位"，但又不能慢到跟不上队伍——拴绳半径就那么点，
+// 太慢会让鬼魂每 tick 都被钳在边界上，走起来一顿一顿。
+// 0.8 在 20Hz 下每 tick 走 0.24 m，追赶一张图的时间是可接受的。
+const GhostSpeedMul = 0.8
+
 // PlayerRadius 是玩家的碰撞半径（米）。
 //
 // 灰盒阶段写死：小于半格（地形格 1 m），保证圆覆盖的格数有限、判定便宜。
@@ -120,32 +128,56 @@ func ApplyInput(p *world.PlayerState, move world.Vec2, aim float64, hasAim bool)
 // tr 不判 nil：NewWorld 恒建 Terrain，nil 是编程错误，panic 比静默直通好。
 // 与 IntegrateBullets 对称（同样直接用 Terrain）。
 func Integrate(p *world.PlayerState, dt float64, tr *world.Terrain) {
-	// 只有活着的玩家能移动。鬼魂另有一套速度，留给 M5。
-	if p.State != world.PlayerAlive {
+	// 三态而不是"非 Alive 一律不动"：鬼魂要能走（spec L49「可探图」）。
+	// 倒地与掉线仍然钉住——它们不是设计里的可玩状态，掉线的身体不该自己
+	// 乱跑（人已经走了，屏幕上那个壳子再移动只会让人以为他还在）。
+	//
+	// 为什么鬼魂放在 Integrate 里而不是另立一个 IntegrateGhost：分轴滑墙、
+	// 子步扫掠、被挡不清 Vel 这三段逻辑对两者完全一样，唯一的差别是
+	// 速度怎么算。复制一份的话，将来改动扫掠语义（比如 slideStep 变化）
+	// 必须记得改两处，漏一处就出现"活人能拐弯鬼魂卡墙角"这种只在死后
+	// 才显形的 bug。
+	var speedMul float64
+	switch p.State {
+	case world.PlayerAlive:
+		// 速度 = 基准 × 常驻倍率（被动疾行）× 限时倍率（冲刺）。
+		//
+		// 两个倍率来自不同的地方，这是刻意的：
+		// 常驻倍率在 p.Derived.SpeedMul（RecomputeDerived 按已装被动算出来的），
+		// 限时倍率在 p.SpeedBuffMul（CastActive 施放那一刻快照进来的）。
+		//
+		// 为什么不在这一行查 build.SkillByID(SkillIDDash) 拿冲刺倍率：分层上
+		// 可行（build 只依赖标准库，systems 依赖 build 不成环，本包的 skills.go
+		// 已经这么用了），但语义上不对。技能可换（spec L37），玩家在冲刺途中
+		// 卸下冲刺会让一个已经开始的效果中途改值或失效；而且这里每个子步都要
+		// 跑，一次可避免的表遍历不值得。快照方案让 Integrate 的契约保持干净：
+		// 只读 world 数据，不知道技能表的存在。
+		//
+		// Derived 走 Effective()：Pool.Spawn 出来的玩家还没重算过，倍率是零值，
+		// 直接乘会让"刚出生的人不能动"。兜底见 world.PlayerDerived.Effective。
+		speedMul = p.Derived.Effective().SpeedMul
+		if p.SpeedBuffLeft > 0 && p.SpeedBuffMul > 0 {
+			speedMul *= p.SpeedBuffMul
+		}
+	case world.PlayerGhost:
+		// 鬼魂不吃任何速度加成：常驻被动（疾行）与限时冲刺都来自技能，
+		// 而鬼魂不是战斗单位。让它们生效会出现"死了反而跑得快"，
+		// 且拴绳会每 tick 触发，鬼魂被钳得原地抖。
+		//
+		// 为什么必须在 Integrate 里显式忽略而不是靠 Kill() 清干净：
+		// Kill() 清的是 SpeedBuffMul/SpeedBuffLeft（限时增益），而
+		// Derived.SpeedMul 是 RecomputeDerived 算出来的常驻值——Kill 不清它，
+		// 因为清了复活后还得重算一遍，反而多一个「忘了重算」的坑。
+		speedMul = GhostSpeedMul
+	default:
+		// PlayerDowned / PlayerDisconnected，以及将来新增的状态默认钉住：
+		// 新状态想动就必须在这里显式加分支，不会因为"忘了处理"而让一个
+		// 不该移动的状态悄悄按鬼魂速度跑起来。
 		p.Vel = world.Vec2{}
 		return
 	}
 
-	// 速度 = 基准 × 常驻倍率（被动疾行）× 限时倍率（冲刺）。
-	//
-	// 两个倍率来自不同的地方，这是刻意的：
-	// 常驻倍率在 p.Derived.SpeedMul（RecomputeDerived 按已装被动算出来的），
-	// 限时倍率在 p.SpeedBuffMul（CastActive 施放那一刻快照进来的）。
-	//
-	// 为什么不在这一行查 build.SkillByID(SkillIDDash) 拿冲刺倍率：分层上
-	// 可行（build 只依赖标准库，systems 依赖 build 不成环，本包的 skills.go
-	// 已经这么用了），但语义上不对。技能可换（spec L37），玩家在冲刺途中
-	// 卸下冲刺会让一个已经开始的效果中途改值或失效；而且这里每个子步都要
-	// 跑，一次可避免的表遍历不值得。快照方案让 Integrate 的契约保持干净：
-	// 只读 world 数据，不知道技能表的存在。
-	//
-	// Derived 走 Effective()：Pool.Spawn 出来的玩家还没重算过，倍率是零值，
-	// 直接乘会让"刚出生的人不能动"。兜底见 world.PlayerDerived.Effective。
-	speed := PlayerSpeed * p.Derived.Effective().SpeedMul
-	if p.SpeedBuffLeft > 0 && p.SpeedBuffMul > 0 {
-		speed *= p.SpeedBuffMul
-	}
-
+	speed := PlayerSpeed * speedMul
 	p.Vel = world.V(p.MoveIntent.X*speed, p.MoveIntent.Y*speed)
 
 	// 子步位移切成等长小段逐段判定。最后一段允许更短，保证总位移精确。
