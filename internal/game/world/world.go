@@ -58,6 +58,14 @@ type World struct {
 	HasMap   bool
 	Hubs     []Hub
 	SpawnHub int
+
+	// GhostTether 是鬼魂拴绳半径（米，spec L49「拴绳于存活玩家一定范围内，
+	// 半径可配置」）。0 或负数表示不拴。
+	//
+	// 存在 World 而不在 systems 里做成常量：spec 明写"可配置"（L138 把
+	// 拴绳半径列为 🟡 调参项），灰盒阶段要能改着试。装配点在 room.New
+	// （从 cfg 拷过来，与 AggroRescoreTicks 同款）。
+	GhostTether float64
 }
 
 // NewWorld 依据配置创建一个空世界。
