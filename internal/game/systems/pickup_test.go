@@ -200,14 +200,17 @@ func TestPickupGrantsExpOrGold(t *testing.T) {
 
 	t.Run("血瓶回血且不超上限", func(t *testing.T) {
 		w := newSystemsWorld(t, 19)
-		_, p := spawnPlayerAt(t, w, 0, 0)
+		pid, p := spawnPlayerAt(t, w, 0, 0)
 		p.HP = 50
 
-		// 血瓶只有被鬼魂搬运（Carrier 非零）时才可被玩家拾取，见
-		// TestHealthPickupNotCollectibleByPlayer。这里直接造一个被搬运的。
+		// 血瓶只有被搬运（Carrier 指向某个玩家）时才可被玩家拾取，见
+		// TestHealthPickupNotCollectibleByPlayer。这里直接造一个「已交接给
+		// 这个玩家」的：M5 起 Carrier 必须是指向玩家的真实 ID，才能表达
+		// 「鬼魂把它递到了这个人手里」——写随便一个数字会让测试的通过与否
+		// 取决于两个池的编号是否恰好撞上。
 		id := SpawnPickup(w, world.V(0.5, 0), world.PickupHealth, 0, 30)
 		if pk := w.Pickups.Get(id); pk != nil {
-			pk.Carrier = id // 冤家就地：只要非 InvalidID 即可
+			pk.Carrier = pid
 		}
 		tickPickups(w, 1)
 		if p.HP != 80 {
@@ -217,7 +220,7 @@ func TestPickupGrantsExpOrGold(t *testing.T) {
 		// 再捡一瓶，溢出的部分要钳在上限，不能把血条顶到 100% 以上。
 		hid := SpawnPickup(w, world.V(0.5, 0), world.PickupHealth, 0, 30)
 		if pk := w.Pickups.Get(hid); pk != nil {
-			pk.Carrier = hid
+			pk.Carrier = pid
 		}
 		tickPickups(w, 1)
 		if p.HP != p.MaxHP {
@@ -228,10 +231,11 @@ func TestPickupGrantsExpOrGold(t *testing.T) {
 
 // TestHealthPickupNotCollectibleByPlayer 钉住 spec L45：怪掉的血瓶玩家不能捡。
 //
-// 血瓶的设计归属是"鬼魂搬运"（spec L66）——玩家变成鬼后才有资格把地上的
-// 血瓶搬给活着的队友，搬运过程中 Carrier 非零才允许被拾取。M4 还没有鬼魂，
-// 所以这条规则在 M4 表现为"任何血瓶都捡不起来"。这是刻意留的坑位：
-// 少了这条判断，玩家就能边跑边捡回满血，M4 的战斗压力设计直接失效。
+// 血瓶的设计归属是"鬼魂搬运"（spec L50）——玩家变成鬼后才有资格把地上的
+// 血瓶搬给活着的队友，交接后 Carrier 指向那个活人才允许被拾取。M4 时
+// 搬运动作还不存在（GhostPickups/GhostHandoffs 是 M5 Task 8 才写的），
+// 所以这条规则当时表现为"任何血瓶都捡不起来"；M5 起它仍然是这条规则，
+// 只是另一半补上了。
 func TestHealthPickupNotCollectibleByPlayer(t *testing.T) {
 	w := newSystemsWorld(t, 20)
 	_, p := spawnPlayerAt(t, w, 0, 0)

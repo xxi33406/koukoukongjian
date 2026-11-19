@@ -143,13 +143,22 @@ func pickupDeltaSeconds(w *world.World) float64 {
 // 多个玩家同时在半径内时取最近的：不取"先遍历到的"，因为 Players 的槽位
 // 顺序取决于谁先连进来，同一个掉落物在不同房间里归属不同，看起来像随机。
 func pickupTarget(w *world.World, pk *world.PickupState) *world.PlayerState {
-	// 血瓶要走鬼魂搬运（spec L66）：只有被鬼魂拎起来（Carrier 非零）的
+	// 血瓶要走鬼魂搬运（spec L50）：只有被鬼魂拎起来（Carrier 非零）的
 	// 血瓶才对活人可捡，怪直接掉在地上的瓶子谁都不能捡（spec L45）。
-	// M4 还没有鬼魂，所以这条实际等于"血瓶一律不可捡"——这不是漏实现，
-	// 而是刻意留的坑位：去掉它，玩家就能边跑边捡回满血，M4 的战斗压力
-	// 设计直接失效。
+	// M5 起搬运动作由 GhostPickups/GhostHandoffs 提供——这条判定与那两条
+	// 合起来才是完整的规则，缺任何一半都会让血瓶要么永远捡不到、
+	// 要么满地可捡。
 	if pk.Kind == world.PickupHealth && pk.Carrier == world.InvalidID {
 		return nil
+	}
+
+	// 被鬼魂搬着的：活人不能半路截走，要等 GhostHandoffs 把 Carrier 改成
+	// 活人 ID 才算"递到手里"。没有这一条，队友自己走过去就能拿，
+	// spec L50 的"死亡玩家 = 后勤位"分工消失，鬼魂没有任何存在意义。
+	if pk.Carrier != world.InvalidID {
+		if holder := w.Players.Get(pk.Carrier); holder != nil && holder.State == world.PlayerGhost {
+			return nil
+		}
 	}
 
 	var (
