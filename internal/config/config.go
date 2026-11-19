@@ -29,7 +29,9 @@ type Config struct {
 	Monster Monster `toml:"monster"`
 	// Progression 是升级曲线参数（M4）。字段名与 TOML 键一一对应。
 	Progression Progression `toml:"progression"`
-	Log         Log         `toml:"log"`
+	// Ghost 是死亡与复活相关参数（M5）。
+	Ghost Ghost `toml:"ghost"`
+	Log   Log   `toml:"log"`
 }
 
 // Server 是进程级参数。
@@ -128,6 +130,19 @@ type Progression struct {
 	KillExp            uint32  `toml:"kill_exp"`              // 击杀一只怪的基础经验
 }
 
+// Ghost 是死亡与复活相关的参数（spec L49-52）。
+//
+// M5 之前没有任何鬼魂/复活参数：玩家根本不会死，配了也用不上。
+type Ghost struct {
+	// TetherRadius 是鬼魂到最近存活玩家的最大距离（米，spec L49
+	// 「拴绳于存活玩家一定范围内，半径可配置」）。
+	//
+	// 0 表示不拴（调试用）。默认 12 米：一张图 128 米，12 米是"能探开
+	// 隔壁一两个房间"的距离；再大鬼魂就能单刷整张图，而它是后勤位，
+	// 拉太远会让"死亡有代价"这件事消失。
+	TetherRadius float64 `toml:"tether_radius"`
+}
+
 // Log 是日志参数。
 type Log struct {
 	Level  string `toml:"level"`  // debug / info / warn / error
@@ -202,6 +217,9 @@ func Default() *Config {
 			MaxLevel:           20,
 			SkillChoiceWindowS: 5,
 			KillExp:            8,
+		},
+		Ghost: Ghost{
+			TetherRadius: 12.0,
 		},
 		Log: Log{
 			Level:  "info",
@@ -416,6 +434,15 @@ func (c *Config) Validate() error {
 	if c.Progression.KillExp == 0 {
 		add("progression.kill_exp = 0，必须为正（否则击杀永远不给经验）")
 	}
+
+	// —— 鬼魂与复活（M5）——
+	//
+	// TetherRadius 只拒负数不拒 0：0 是"不拴"的合法调试值，spec L49 要求
+	// 半径可配置，灰盒阶段要能把鬼魂放开看地图长什么样。
+	if c.Ghost.TetherRadius < 0 {
+		add("ghost.tether_radius = %v，不能为负数（0 表示不拴）", c.Ghost.TetherRadius)
+	}
+	addNaN("ghost.tether_radius", c.Ghost.TetherRadius)
 
 	switch c.Log.Level {
 	case "debug", "info", "warn", "error":

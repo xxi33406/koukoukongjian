@@ -94,6 +94,15 @@ type Room struct {
 	// events 是这一 tick 攒下的伤害/击杀事件，M2 只攒不发（快照带上它
 	// 属于 M3 的 UI 反馈）。每个 tick 开头用 [:0] 清空以复用底层数组。
 	events []world.DamageEvent
+	// miscEvents 装不是伤害事件的 GameEvent（复活、团灭）。
+	//
+	// 为什么与 r.events 分开：r.events 是 []world.DamageEvent，它的形状由
+	// 伤害结算决定（Src/Dst/Amount/IsKill），硬塞复活进去会逼着给 DamageEvent
+	// 加一个"我其实不是伤害"的 Kind 字段——那是把两件事装进一个结构。
+	// 分开之后 broadcast 里拼一下就行，每条只有一次分配。
+	//
+	// 每 tick 开头用 [:0] 清空，与 r.events 同节拍。
+	miscEvents []*proto.GameEvent
 	// fog 是队伍共享迷雾状态（HasMap 房间才有，否则为 nil）。
 	// 只在 tick 循环里读写——Run 起来之后 World 归 tick goroutine 独占，
 	// fog 点灯依据玩家位置，与 World 同生命周期同并发约束。
@@ -226,6 +235,11 @@ func New(cfg *config.Config, log *slog.Logger, opts Options) *Room {
 		done:         make(chan struct{}),
 	}
 	r.World.Grid.SetBruteThreshold(cfg.Space.SpatialBruteThreshold)
+
+	// 鬼魂拴绳半径（M5，spec L49「半径可配置」）。与 AggroRescoreTicks
+	// 同款：配置在装配期拷进 World，模拟路径不读 cfg——systems 层不该
+	// 知道配置结构，测试也能直接改 World 字段摆场景。
+	r.World.GhostTether = cfg.Ghost.TetherRadius
 
 	// 生成灰盒第一关（NewWorld 不能自己调 mapgen：会构成 import cycle）。
 	// 失败按 prompt 裁定降级：记警告并保持 HasMap=false，不 panic——
@@ -411,6 +425,7 @@ func (r *Room) tick() {
 	//    events 用 [:0] 清空而不是 = nil：前者复用底层数组，后者每 tick
 	//    分配一次，20Hz 下就是每秒 20 次无谓分配。
 	r.events = r.events[:0]
+	r.miscEvents = r.miscEvents[:0]
 	r.pendingLevelUps = r.pendingLevelUps[:0]
 	r.drainJoins()
 	r.drainLeaves()
@@ -420,6 +435,23 @@ func (r *Room) tick() {
 
 	// 1. 重建空间索引（每 tick 一次，不是每子步）。
 	w.Grid.Rebuild(w.Monsters, w.Bullets, w.Players)
+
+	// 1.2 鬼魂：拴绳 → 复活 → 团灭（M5 Task 11）。
+	//
+	// 顺序是语义，不是随手排的：
+	//   - 拴绳必须早于复活：拴绳可能把鬼魂拉出祭坛范围，而复活判定要看
+	//     「最终位置」。反过来的话，被拴住的鬼魂会在坛外持续引导——先判
+	//     复活通过→再被拉走→下一 tick 又通过，引导永远在"通过但没到点"
+	//     之间循环，表现是复活进度条走满却永远不复活。
+	//   - 团灭放在最后：它要读"这一 tick 处理完之后"的真实状态，早于复活
+	//     会把"正要复活的人"当成鬼魂报一次团灭。
+	//
+	// 三件都在 tick 级而非子步级：ReviveAt 是 tick 号（进子步会被同一 tick
+	// 判定三次，引导实际时长缩成三分之一）；团灭上报是"每 tick 至多一次"
+	// 的语义（参 CheckTeamWipe 的返回值）。
+	r.tickTethers()
+	r.tickRevives()
+	r.tickTeamWipe()
 
 	// 1.5 波次（M3 Task 10）：每 tick 一次，在子步之外——与迷雾 Reveal、
 	// fire 同款"世界级结算"节拍。刷怪走 w.RandFloat64 包装，RNG 调用计数
@@ -453,6 +485,14 @@ func (r *Room) tick() {
 			return true
 		})
 	}
+
+	// 2.1 鬼魂搬运（M5 Task 11）：先捡起、再交接。
+	//
+	// 顺序是捡起在前：刚掉的掉落物与刚走到旁边的鬼魂在同一 tick 内都该
+	// 生效，反过来的话玩家会看到"东西在旁边但要多等一帧才被拎起来"。
+	// 放在 AI 之后、子步之前——搬运只改 Carrier 一个字段，与移动积分
+	// 无关，但必须在 UpdatePickups（3.06，会按 Carrier 判可拾取性）之前。
+	r.tickGhostCarry()
 
 	// 2~3. 子步内：移动 → 碰撞 → 伤害 → 死亡清理
 	for sub := 0; sub < r.subSteps; sub++ {
@@ -609,6 +649,13 @@ func (r *Room) subStep(sub int) {
 	//       在回收之前取 Pos。中毒/环境伤害这类非 ApplyHits 来源的击杀
 	//       在 M4 还没有，缺口记在汇报的已知限制里。
 	r.grantKillExp(inc)
+
+	// 2.5.6 击杀金币（M5 Task 7）：与经验同一位置，必须在 Reap 前——
+	//       金币归属靠 ev.Src，而 Reap 之后 ev.Dst 的槽位已清，位置也拿不到。
+	r.grantKillGold(inc)
+
+	// 2.5.7 掉落（M5 Task 6）：同样必须在 Reap 前取死亡位置。
+	r.spawnLoot(inc)
 
 	// 2.6 死亡清理：回收 + 世代 +1
 	r.events = append(r.events, systems.Reap(w)...)
@@ -1086,6 +1133,115 @@ func (r *Room) tickInventory() {
 		}
 		return true
 	})
+}
+
+// tickRevives 推进祭坛复活引导（M5 Task 5 的接线）。
+//
+// 自动开始而不是按键（M5 拍板）：鬼魂站在祭坛上就进入引导，走出范围或
+// 给出移动输入就打断。不需要"按 E"是刻意的——灰盒阶段玩家分不清"我没
+// 按键"和"系统没响应"，而自动开始让规则可见（站着不动就在涨）。
+//
+// 每 tick 一次、不进子步：ReviveAt 是 tick 号，进子步会让同一个 tick 号
+// 被判定三次，引导实际时长变成配置的三分之一（与 tickInventory 同款理由）。
+func (r *Room) tickRevives() {
+	now := r.World.Tick
+	tickLen := systems.ReviveTicks(float64(r.cfg.Server.TickRate))
+	r.World.Players.Each(func(id world.EntityID, p *world.PlayerState) bool {
+		if p.State != world.PlayerGhost {
+			return true
+		}
+		if p.ReviveAt == 0 {
+			// 没在引导：站在祭坛上就自动开始。ReviveBegin 自己判范围
+			// 与幂等（已在引导返 false），这里不重复判。
+			systems.ReviveBegin(r.World, p, now+tickLen)
+			return true
+		}
+		if !systems.ReviveTick(r.World, p, now) {
+			return true
+		}
+		// 复活完成：广播事件给客户端播特效。
+		//
+		// 走 miscEvents 而不是 r.events：后者是 []world.DamageEvent，
+		// 复活不是伤害（见 miscEvents 字段注释）。
+		r.miscEvents = append(r.miscEvents, &proto.GameEvent{
+			Kind: proto.GameEventKind_GAME_EVENT_KIND_REVIVE,
+			A:    uint32(id),
+		})
+		r.log.Info("复活", "player", id, "pos", p.Pos)
+		// RecomputeDerived 必须重算：复活给半血，而复活清掉过
+		// SpeedBuffLeft/SpeedBuffMul，Derived 里缓存的倍率要与槽位内容
+		// 保持一致（重生后换过装备或升级过都在这里统一收口）。
+		systems.RecomputeDerived(p)
+		return true
+	})
+}
+
+// tickTethers 把跑远的鬼魂拉回拴绳半径内（M5 Task 3 的接线）。
+//
+// 半径来自 World.GhostTether（room.New 从 cfg.Ghost.TetherRadius 拷入），
+// 不在这里读 cfg：systems 层不该知道配置结构，且 0（不拴）的语义由
+// TetherGhosts 自己处理。
+func (r *Room) tickTethers() {
+	systems.TetherGhosts(r.World)
+}
+
+// tickGhostCarry 推进鬼魂搬运：先捡起、再交接（M5 Task 8 的接线）。
+//
+// 顺序是捡起在前：刚掉的掉落物与刚走到旁边的鬼魂在同一 tick 内都该生效，
+// 反过来的话玩家会看到"东西在旁边但要多等一帧才被拎起来"。
+func (r *Room) tickGhostCarry() {
+	systems.GhostPickups(r.World)
+	systems.GhostHandoffs(r.World)
+}
+
+// tickTeamWipe 判定团灭并广播（M5 Task 10 的接线）。
+//
+// 房间继续跑（M5 拍板）：灰盒没有关卡脚本，停下就只剩重启能看。
+// CheckTeamWipe 保证只在新成立时返回 true，所以这里不必再记状态。
+func (r *Room) tickTeamWipe() {
+	if !systems.CheckTeamWipe(r.World) {
+		return
+	}
+	r.miscEvents = append(r.miscEvents, &proto.GameEvent{
+		Kind: proto.GameEventKind_GAME_EVENT_KIND_WIPE,
+	})
+	r.log.Warn("团灭：全队变鬼魂", "tick", r.World.Tick)
+}
+
+// grantKillGold 把击杀金币发给击杀者（M5 Task 7 的接线）。
+func (r *Room) grantKillGold(inc []world.DamageEvent) {
+	for _, ev := range inc {
+		if !ev.IsKill {
+			continue
+		}
+		systems.GrantKillGold(r.World, ev.Src, ev.Dst)
+	}
+}
+
+// spawnLoot 在每只被杀的怪物死亡位置生成掉落（M5 Task 6 的接线）。
+//
+// 必须在 Reap 之前调：Reap 会 Pool.Kill，槽位清零、位置没了。
+//
+// 技能的 ID 从主动技能表里随机挑一个——M5 掉"随机技能"，M6 位置死亡
+// 技能会改成按死亡位置查表（那时这个函数要知道死亡坐标与据点的关系）。
+// 走 w.RandIntn 包装而不是 rand.Intn：模拟路径必须让 rngCalls 计数完整，
+// 否则回放对不上（world.go 的 RNG 纪律）。
+func (r *Room) spawnLoot(inc []world.DamageEvent) {
+	skills := build.ActiveSkills()
+	if len(skills) == 0 {
+		return
+	}
+	for _, ev := range inc {
+		if !ev.IsKill {
+			continue
+		}
+		m := r.World.Monsters.Get(ev.Dst)
+		if m == nil {
+			continue // 已被别处回收，拿不到位置
+		}
+		s := skills[r.World.RandIntn(len(skills))]
+		systems.SpawnDrops(r.World, m.Pos, s.ID)
+	}
 }
 
 // fire 让每个在座玩家按当前按键尝试开火。

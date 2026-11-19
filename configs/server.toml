@@ -69,6 +69,12 @@ max_level             = 20    # 等级上限，必须 1..99（Level 字段是 ui
 skill_choice_window_s = 5     # 三选一决策窗口（秒）。0 等于不给人选，被 Validate 拒
 kill_exp              = 8     # 击杀一只怪的基础经验。20 配 8：一个据点 12 只怪 = 96 点
 
+# M5 死亡循环（spec L49-52）
+[ghost]
+# 鬼魂到最近存活玩家的最大距离（米，spec L49「半径可配置」）。
+# 0 表示不拴（调试用）。12 米 = 能探开隔壁一两个房间，再大鬼魂就能单刷全图。
+tether_radius = 12.0
+
 [log]
 level  = "info"  # debug / info / warn / error
 format = "text"  # text / json

@@ -355,6 +355,12 @@ func (r *Room) broadcast() {
 	if len(r.events) > 0 {
 		evs = proto.EventsToProto(r.events)
 	}
+	// 非伤害事件（复活、团灭）拼在后面：它们不经过 EventsToProto 的
+	// 伤害映射（那个函数的形状由 DamageEvent 决定，见 miscEvents 注释）。
+	// 拼接顺序固定（伤害在前、其余在后），回放可复现。
+	if len(r.miscEvents) > 0 {
+		evs = append(evs, r.miscEvents...)
+	}
 
 	r.peers.each(func(p *peer) {
 		snap, _ := p.builder.Build(r.World, p.id, false)
