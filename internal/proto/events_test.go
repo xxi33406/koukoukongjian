@@ -103,3 +103,16 @@ func TestEventBatchTruncatedKillsSortedFirst(t *testing.T) {
 		t.Fatalf("击杀区末尾 %d 落在伤害区起点 %d 之后", lastKill, firstPlain)
 	}
 }
+
+// 团灭事件能正确映射（M5 唯一新增的枚举）。
+//
+// 钉 7 这个具体数值：枚举值就是线上协议，客户端按数值分支，改号等于
+// 改协议。同时钉住"枚举没被重新生成时不会悄悄少一个值"。
+func TestWipeEventMaps(t *testing.T) {
+	ev := GameEvent{
+		Kind: GameEventKind_GAME_EVENT_KIND_WIPE,
+	}
+	if ev.Kind != 7 {
+		t.Fatalf("GAME_EVENT_KIND_WIPE = %d，期望 7", ev.Kind)
+	}
+}

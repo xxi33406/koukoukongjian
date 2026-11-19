@@ -92,6 +92,12 @@ const (
 	GameEventKind_GAME_EVENT_KIND_LEVEL_UP    GameEventKind = 4
 	GameEventKind_GAME_EVENT_KIND_DEATH       GameEventKind = 5
 	GameEventKind_GAME_EVENT_KIND_REVIVE      GameEventKind = 6
+	// GAME_EVENT_KIND_WIPE 是团灭：全队变成鬼魂（spec L52 "本局失败"）。
+	//
+	// M5 只广播事件不停房间（用户拍板决定 4）：灰盒没有关卡脚本，停下房间
+	// 就只剩重启能看。a/b 两个字段都留空，客户端按"收到即显示失败 UI"处理，
+	// 不要从 a/b 里猜谁死了——谁死了由各自的 PlayerSelf.state 表达。
+	GameEventKind_GAME_EVENT_KIND_WIPE GameEventKind = 7
 )
 
 // Enum value maps for GameEventKind.
@@ -104,6 +110,7 @@ var (
 		4: "GAME_EVENT_KIND_LEVEL_UP",
 		5: "GAME_EVENT_KIND_DEATH",
 		6: "GAME_EVENT_KIND_REVIVE",
+		7: "GAME_EVENT_KIND_WIPE",
 	}
 	GameEventKind_value = map[string]int32{
 		"GAME_EVENT_KIND_UNSPECIFIED": 0,
@@ -113,6 +120,7 @@ var (
 		"GAME_EVENT_KIND_LEVEL_UP":    4,
 		"GAME_EVENT_KIND_DEATH":       5,
 		"GAME_EVENT_KIND_REVIVE":      6,
+		"GAME_EVENT_KIND_WIPE":        7,
 	}
 )
 
@@ -2045,7 +2053,7 @@ const file_internal_proto_game_proto_rawDesc = "" +
 	"\x12ENTITY_KIND_PLAYER\x10\x01\x12\x17\n" +
 	"\x13ENTITY_KIND_MONSTER\x10\x02\x12\x16\n" +
 	"\x12ENTITY_KIND_BULLET\x10\x03\x12\x16\n" +
-	"\x12ENTITY_KIND_PICKUP\x10\x04*\xd7\x01\n" +
+	"\x12ENTITY_KIND_PICKUP\x10\x04*\xf1\x01\n" +
 	"\rGameEventKind\x12\x1f\n" +
 	"\x1bGAME_EVENT_KIND_UNSPECIFIED\x10\x00\x12\x1a\n" +
 	"\x16GAME_EVENT_KIND_DAMAGE\x10\x01\x12\x18\n" +
@@ -2053,7 +2061,8 @@ const file_internal_proto_game_proto_rawDesc = "" +
 	"\x16GAME_EVENT_KIND_PICKUP\x10\x03\x12\x1c\n" +
 	"\x18GAME_EVENT_KIND_LEVEL_UP\x10\x04\x12\x19\n" +
 	"\x15GAME_EVENT_KIND_DEATH\x10\x05\x12\x1a\n" +
-	"\x16GAME_EVENT_KIND_REVIVE\x10\x06B0Z#koukoukongjian/internal/proto;proto\xaa\x02\bKK.Protob\x06proto3"
+	"\x16GAME_EVENT_KIND_REVIVE\x10\x06\x12\x18\n" +
+	"\x14GAME_EVENT_KIND_WIPE\x10\aB0Z#koukoukongjian/internal/proto;proto\xaa\x02\bKK.Protob\x06proto3"
 
 var (
 	file_internal_proto_game_proto_rawDescOnce sync.Once

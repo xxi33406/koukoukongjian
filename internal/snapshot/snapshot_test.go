@@ -733,3 +733,133 @@ func TestSnapshotFullFlag(t *testing.T) {
 		t.Fatalf("Reset 后应全量：stats.Full=%v snap.Full=%v", st.Full, snap.Full)
 	}
 }
+
+// pickupAdd 从 adds 里挑出掉落物那一条，没有则返回 nil。
+func pickupAdd(snap *proto.Snapshot) *proto.EntityDelta {
+	for _, a := range snap.Adds {
+		if a.Kind == proto.EntityKind_ENTITY_KIND_PICKUP {
+			return a
+		}
+	}
+	return nil
+}
+
+// 掉落物的倒计时必须下发：客户端要画"还剩几秒"的环。
+//
+// M4 的 pickupKey 只有 posX/posY/kind/ref——掉落物在地上的 30 秒里，
+// 客户端完全看不出它快没了。而"快要消失了"正是玩家决定"现在捡还是
+// 打完这波再捡"的唯一依据，不透明就等于这条规则不存在。
+//
+// 寿命借用 EntityDelta.hp：拾取物没有血量概念，这个字段原本恒 0。
+func TestPickupLifeReachesSnapshot(t *testing.T) {
+	w := newTestWorld(t)
+	selfID, _ := spawnPlayer(t, w)
+
+	_, pk := w.Pickups.Spawn()
+	if pk == nil {
+		t.Fatal("生成拾取物失败")
+	}
+	pk.Pos = world.V(10, 10)
+	pk.Kind = world.PickupHealth
+	pk.Life = 12.5 // 剩 12.5 秒
+
+	b := NewBuilder()
+	snap, _ := b.Build(w, selfID, false)
+
+	d := pickupAdd(snap)
+	if d == nil {
+		t.Fatal("快照里没有掉落物")
+	}
+	// 12.5 秒 / 0.5 秒一档 = 25 档，每档 500 毫秒。
+	const wantHp = 25 * 500
+	if d.GetHp() != wantHp {
+		t.Fatalf("掉落物寿命 Hp = %d，期望 %d（12.5 秒按 0.5 秒一档）", d.GetHp(), wantHp)
+	}
+	if d.GetFlags()&pickupFlagCarried != 0 {
+		t.Fatalf("地上的掉落物不该带搬运位，Flags = %d", d.GetFlags())
+	}
+}
+
+// 掉落物寿命变化必须产生 update：客户端靠这个刷新倒计时环。
+//
+// 这条比上一条更关键——只有 adds 有寿命而 update 不感知寿命的话，
+// 环会停在"刚出现时的那一秒"，看起来像卡死。而 pickupKey 不带寿命时
+// 正是这个后果：delta 判重认为"没变"，客户端永远停在第一档。
+func TestPickupLifeChangeProducesUpdate(t *testing.T) {
+	w := newTestWorld(t)
+	selfID, _ := spawnPlayer(t, w)
+
+	_, pk := w.Pickups.Spawn()
+	if pk == nil {
+		t.Fatal("生成拾取物失败")
+	}
+	pk.Pos = world.V(10, 10)
+	pk.Kind = world.PickupHealth
+	pk.Life = 20.4
+
+	b := NewBuilder()
+	b.Build(w, selfID, false) // 第一帧：全量
+
+	// 同档内变化不发：20.4 与 20.1 同属第 40 档（20.0~20.5 区间），
+	// 量化在这里兑现收益——寿命每 tick 都变（20Hz），用原始值会让每颗
+	// 掉落物每 tick 都发一条 update，白白吃带宽。
+	pk.Life = 20.1
+	if _, st := b.Build(w, selfID, false); st.Updates != 0 {
+		t.Fatalf("同一档内寿命变化产生了 %d 条 update，量化失去意义", st.Updates)
+	}
+
+	// 跨档必须发：19.9 秒落进第 39 档。
+	pk.Life = 19.9
+	snap, st := b.Build(w, selfID, false)
+	if st.Updates != 1 {
+		t.Fatalf("寿命跨档 updates = %d，期望 1", st.Updates)
+	}
+	if got, want := snap.Updates[0].GetHp(), int32(39*500); got != want {
+		t.Fatalf("跨档后 Hp = %d，期望 %d", got, want)
+	}
+}
+
+// 被鬼魂搬着的东西，客户端要能画出来（spec L50 把搬运做成了团队协作
+// 的一部分，看不见就等于不存在）。
+//
+// 搬运位借用 EntityDelta.flags 的 bit0：拾取物的 flags 原本恒 0。
+func TestPickupCarrierReachesSnapshot(t *testing.T) {
+	w := newTestWorld(t)
+	selfID, _ := spawnPlayer(t, w)
+
+	gid, ghost := w.Players.Spawn()
+	if ghost == nil {
+		t.Fatal("生成鬼魂失败")
+	}
+	ghost.State = world.PlayerGhost
+	ghost.Pos = world.V(10, 10)
+
+	_, pk := w.Pickups.Spawn()
+	if pk == nil {
+		t.Fatal("生成拾取物失败")
+	}
+	pk.Pos = world.V(10.5, 10)
+	pk.Kind = world.PickupHealth
+	pk.Life = 30
+
+	b := NewBuilder()
+	snap, _ := b.Build(w, selfID, false) // 首帧：瓶子还在地上
+
+	d := pickupAdd(snap)
+	if d == nil {
+		t.Fatal("快照里没有掉落物")
+	}
+	if d.GetFlags()&pickupFlagCarried != 0 {
+		t.Fatalf("地上的掉落物不该带搬运位，Flags = %d", d.GetFlags())
+	}
+
+	// 鬼魂把它拎起来：下一次 delta 必须置搬运位。
+	pk.Carrier = gid
+	snap, st := b.Build(w, selfID, false)
+	if st.Updates != 1 {
+		t.Fatalf("搬运状态变化 updates = %d，期望 1", st.Updates)
+	}
+	if snap.Updates[0].GetFlags()&pickupFlagCarried == 0 {
+		t.Fatalf("被搬运的掉落物没有标记（Flags = %d）", snap.Updates[0].GetFlags())
+	}
+}

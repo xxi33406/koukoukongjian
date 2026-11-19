@@ -226,6 +226,12 @@ enum GameEventKind {
   GAME_EVENT_KIND_LEVEL_UP = 4;
   GAME_EVENT_KIND_DEATH = 5;
   GAME_EVENT_KIND_REVIVE = 6;
+  // GAME_EVENT_KIND_WIPE 是团灭：全队变成鬼魂（spec L52 "本局失败"）。
+  //
+  // M5 只广播事件不停房间（用户拍板决定 4）：灰盒没有关卡脚本，停下房间
+  // 就只剩重启能看。a/b 两个字段都留空，客户端按"收到即显示失败 UI"处理，
+  // 不要从 a/b 里猜谁死了——谁死了由各自的 PlayerSelf.state 表达。
+  GAME_EVENT_KIND_WIPE = 7;
 }
 
 message GameEvent {

@@ -11,6 +11,8 @@
 package snapshot
 
 import (
+	"math"
+
 	"koukoukongjian/internal/game/world"
 	"koukoukongjian/internal/proto"
 )
@@ -298,11 +300,56 @@ func bulletKey(bl *world.BulletState) entityKey {
 	}
 }
 
+// pickupFlagCarried 是 EntityDelta.flags 的 bit0：这个掉落物正被鬼魂/队友搬运。
+//
+// 拾取物没有状态位（flags 原本恒 0），所以这个比特是白捡的；子弹的
+// world.BulletFlags 占用同一字段，但两者 Kind 不同，客户端按 Kind 解释。
+const pickupFlagCarried uint32 = 1 << 0
+
+// pickupLifeSlot 把剩余寿命量化成 0.5 秒一档，返回档位（1 档 = 500 毫秒）。
+//
+// 为什么要量化：寿命每 tick 都变（20Hz），原始浮点会让每个掉落物每 tick
+// 产生一条 update，白白吃带宽；0.5 秒对"还剩几秒"的倒计时环完全够用。
+//
+// 代价必须写清楚：同一档内值不变，因此不产生 delta，客户端看到的倒计时
+// 是 0.5 秒粒度的。这不会出现"停在 0 不动"——最后一档走完后 Life 归零，
+// UpdatePickups 会把掉落物 Kill 掉，客户端收到的是 remove 而不是 0。
+//
+// 必须有下界与 NaN 保护：AGENTS §2.6 说浮点转整数越界是平台相关的未定义值，
+// 档位为负会变成反号的 Hp（客户端把倒计时画成"还有 36 秒"）。
+func pickupLifeSlot(pk *world.PickupState) int16 {
+	slot := float64(pk.Life) / 0.5
+	if math.IsNaN(slot) || slot <= 0 {
+		return 0
+	}
+	if slot >= math.MaxInt16 {
+		return math.MaxInt16
+	}
+	return int16(slot)
+}
+
+// pickupKey 是掉落物的快照 diff 键。
+//
+// M5 加了两项（M4 遗留的可见性缺口：掉落物在客户端只有位置，看不出
+// 它快没了、也看不出谁搬着它）：
+//   - hp：客户端画倒计时环的唯一依据。不透明的话"快要消失"这条规则对
+//     玩家不存在，而它正是"现在捡还是打完这波再捡"的决策依据。
+//   - flags：鬼魂搬着的东西要能被看见（spec L50 把搬运做成了团队协作的
+//     一部分，看不见就等于不存在）。
+//
+// 两项都必须进键：判重键不带寿命的话，"寿命变了"会被当成"没变"，
+// 客户端永远停在第一档刻度上，看起来像卡死。
 func pickupKey(pk *world.PickupState) entityKey {
+	var carries uint8
+	if pk.Carrier != world.InvalidID {
+		carries = 1
+	}
 	return entityKey{
 		posX:  proto.QuantizePos(pk.Pos.X),
 		posY:  proto.QuantizePos(pk.Pos.Y),
 		state: uint8(pk.Kind),
+		flags: carries,
+		hp:    pickupLifeSlot(pk),
 		// RefID 是技能/道具编号，决定客户端选哪张贴图。
 		ref: uint32(pk.RefID),
 	}
@@ -375,11 +422,26 @@ func bulletDelta(id world.EntityID, bl *world.BulletState) *proto.EntityDelta {
 }
 
 func pickupDelta(id world.EntityID, pk *world.PickupState) *proto.EntityDelta {
+	var carries uint32
+	if pk.Carrier != world.InvalidID {
+		carries = pickupFlagCarried
+	}
 	return &proto.EntityDelta{
 		EntityId: uint32(id),
 		Kind:     proto.EntityKind_ENTITY_KIND_PICKUP,
 		Pos:      vecQ(pk.Pos),
 		State:    uint32(pk.Kind),
+		// Hp 复用为剩余寿命（毫秒）：拾取物没有血量概念，这个字段原本恒 0，
+		// 客户端拿它画倒计时环。0.5 秒一档乘以 500 还原成毫秒。
+		//
+		// 注意这是量化值：客户端看到的是 0.5 秒粒度的倒计时，同档内不刷新
+		// （见 pickupKey 的注释）。最后一档走完掉落物就被 Kill，不会停在 0。
+		//
+		// 必须先转 int32 再乘 500：int16 上界 32767×500 远超 int16 范围，
+		// 先乘会回绕成负数，客户端把倒计时画成"还有 -16383 秒"。
+		Hp: int32(pickupLifeSlot(pk)) * 500,
+		// Flags 位 0 = 正被鬼魂/队友搬运（拾取物原本恒 0，不与其他语义冲突）。
+		Flags: carries,
 		// RefID 放技能/道具的编号，客户端据此选贴图。EntityDelta 没有独立
 		// 字段可用，复用 OwnerId——拾取物没有归属，语义上不冲突。
 		OwnerId: uint32(pk.RefID),
