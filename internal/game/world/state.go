@@ -366,6 +366,12 @@ type BulletState struct {
 	Flags   BulletFlags
 	Pierce  uint8 // 剩余可穿透次数
 
+	// Bounces 是这颗子弹已经被反射的次数。
+	//
+	// 上限由 systems.maxBounces 控制（那里是策略，这里只存状态）。
+	// 没有它的话，两面反射面对射会让子弹无限来回飞，永远不消失。
+	Bounces uint8
+
 	// —— 上一子步位置，用于扫掠判定 ——
 	//
 	// 单独存而不是回退积分：一旦扣血/分裂等逻辑改变了速度，用新的速度反推

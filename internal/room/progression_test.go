@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"koukoukongjian/internal/game/build"
 	"koukoukongjian/internal/game/world"
 	"koukoukongjian/internal/proto"
 )
@@ -139,11 +140,16 @@ func TestRoomSendsSkillChoicesOnLevelUp(t *testing.T) {
 	if sc.WindowTicks == 0 {
 		t.Errorf("窗口 tick 数 = 0，期望大于 0（客户端要按它画倒计时）")
 	}
-	// 候选互不重复，且 skill_id 落在合法的 1..8。
+	// 候选互不重复，且每个 skill_id 都能在技能表里查到。
+	//
+	// 不用硬编码的上界（曾经写死 1..8）：技能表随里程碑增长，硬编码的
+	// 上界会在加技能时变成一条与被测行为无关的失败。改成查表判定后，
+	// 「候选来自真实技能」这件事永远成立，而「表里有几条」由 build 包
+	// 自己的 TestSkillTableShape 管。
 	seen := make(map[uint32]bool, len(sc.Choices))
 	for i, c := range sc.Choices {
-		if c.SkillId == 0 || c.SkillId > 8 {
-			t.Errorf("第 %d 个候选的 skill_id = %d，期望落在 1..8", i, c.SkillId)
+		if _, ok := build.SkillByID(uint16(c.SkillId)); !ok {
+			t.Errorf("第 %d 个候选的 skill_id = %d，技能表里查不到", i, c.SkillId)
 		}
 		if seen[c.SkillId] {
 			t.Errorf("第 %d 个候选 skill_id = %d 与前面重复", i, c.SkillId)

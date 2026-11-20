@@ -123,6 +123,8 @@ func CastActive(w *world.World, id world.EntityID, slot int, p *world.PlayerStat
 		castDash(p, s)
 	case build.SkillIDInvuln:
 		p.InvulnLeft = s.DurationS
+	case build.SkillIDReflect:
+		castReflect(w, id, p, s)
 	default:
 		// 表里新增了主动技能但这里没接线：不设冷却、返回 false。
 		// 静默设冷却会让玩家按了没效果却进冷却，比"没反应"更难查。
@@ -220,4 +222,12 @@ func countdown(left, dt float64) float64 {
 		return 0
 	}
 	return left
+}
+
+// castReflect 是 12 号「反射面」：在玩家脚下放一片反射区域。
+//
+// 放在玩家位置而不是朝向前方一段距离：灰盒阶段玩家分不清「放远了」
+// 和「没放出来」，脚下一放就能立刻看到镜子在自己身上。
+func castReflect(w *world.World, id world.EntityID, p *world.PlayerState, s build.Skill) {
+	SpawnZone(w, p.Pos, s.Radius, s.DurationS, world.ZoneReflect, id, world.ElementNone)
 }

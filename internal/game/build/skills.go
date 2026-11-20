@@ -73,6 +73,15 @@ const (
 	SkillIDBurst     uint16 = 6 // 环形爆发
 	SkillIDHeal      uint16 = 7 // 治疗
 	SkillIDInvuln    uint16 = 8 // 短时无敌
+
+	// —— M6：元素技能与反射面 ——
+	//
+	// 8 之后追加，编号不能复用：技能 ID 写进协议（SkillChoices.choices
+	// 的 skill_id）与快照，改号会让存档与回放错位。
+	SkillIDFlame   uint16 = 9  // 火焰喷射（火）
+	SkillIDWave    uint16 = 10 // 水波（水）
+	SkillIDBolt    uint16 = 11 // 雷击（雷）
+	SkillIDReflect uint16 = 12 // 反射面
 )
 
 // skillTable 是全部技能定义，内部持有。
@@ -161,6 +170,19 @@ var skillTable = [...]Skill{
 		Desc:      "1.5 秒内免疫所有伤害，冷却 20 秒。",
 		CooldownS: 20,
 		DurationS: 1.5,
+	},
+
+	// —— M6：反射面 ——
+	{
+		ID:   SkillIDReflect,
+		Name: "反射面",
+		Kind: SkillKindActive,
+		Desc: "在脚下放一面镜子，队友的子弹打上去会弹回来，伤害算你的。",
+		// CooldownS 12 秒：反射是「配合的高光时刻」，不是高频操作。
+		// 低于 8 秒会让反射面变成常驻地形，玩家不再需要挑时机。
+		CooldownS: 12.0,
+		DurationS: 3.0,
+		Radius:    2.0,
 	},
 }
 

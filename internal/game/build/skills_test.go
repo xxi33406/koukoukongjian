@@ -2,13 +2,15 @@ package build
 
 import "testing"
 
-// TestSkillTableShape 钉住表形状：四个主动、四个被动。
+// TestSkillTableShape 钉住表形状：五个主动、四个被动。
 //
 // 用数量而不是"至少几个"：多出来的一条和少一条一样可疑，会直接改变
 // 选择界面的候选数（Task 6 的 3 选 1 依赖池子大小）。
+//
+// M6 起主动多一条（12 号反射面）；9/10/11 三条元素技能在 Task 7 加。
 func TestSkillTableShape(t *testing.T) {
-	if got := len(ActiveSkills()); got != 4 {
-		t.Fatalf("主动技能 %d 个，期望 4", got)
+	if got := len(ActiveSkills()); got != 5 {
+		t.Fatalf("主动技能 %d 个，期望 5", got)
 	}
 	if got := len(PassiveSkills()); got != 4 {
 		t.Fatalf("被动技能 %d 个，期望 4", got)
@@ -22,7 +24,7 @@ func TestSkillTableShape(t *testing.T) {
 // 「用值推断状态」那类根因。
 func TestSkillIDsUnique(t *testing.T) {
 	all := SkillTable()
-	if got, want := len(all), 8; got != want {
+	if got, want := len(all), 9; got != want {
 		t.Fatalf("技能表 %d 条，期望 %d 条", got, want)
 	}
 	seen := make(map[uint16]string, len(all))
