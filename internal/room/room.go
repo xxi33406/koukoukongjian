@@ -466,6 +466,8 @@ func (r *Room) tick() {
 		r.recordHubStates()
 		systems.UpdateWaves(r.World)
 		r.logHubChanges()
+		// 分账必须在 UpdateWaves 之后：HubCleared 是它写进去的。
+		r.settleClearedHubs()
 	}
 
 	// 2. AI 决策（M3 Task 10）：每 tick 一次，循环放在子步循环之外、
@@ -650,9 +652,10 @@ func (r *Room) subStep(sub int) {
 	//       在 M4 还没有，缺口记在汇报的已知限制里。
 	r.grantKillExp(inc)
 
-	// 2.5.6 击杀金币（M5 Task 7）：与经验同一位置，必须在 Reap 前——
+	// 2.5.6 击杀金币（M6 Task 9）：与经验同一位置，必须在 Reap 前——
 	//       金币归属靠 ev.Src，而 Reap 之后 ev.Dst 的槽位已清，位置也拿不到。
-	r.grantKillGold(inc)
+	//       M6 起不再是直给玩家，而是记进据点池子等着清完分账。
+	r.creditHubKills(inc)
 
 	// 2.5.7 掉落（M5 Task 6）：同样必须在 Reap 前取死亡位置。
 	r.spawnLoot(inc)
@@ -1208,13 +1211,52 @@ func (r *Room) tickTeamWipe() {
 	r.log.Warn("团灭：全队变鬼魂", "tick", r.World.Tick)
 }
 
-// grantKillGold 把击杀金币发给击杀者（M5 Task 7 的接线）。
-func (r *Room) grantKillGold(inc []world.DamageEvent) {
+// creditHubKills 把本子步的击杀金币记进据点池子（不再是直给击杀者）。
+//
+// M5 是直给（GrantKillGold），M6 改成进池分账（spec L79 的「据点内贡献
+// 大的多拿钱，每据点重新计算」）。两套规则不能并存：直给 + 分账会让
+// 玩家拿到两倍，而那个 bug 不会报错、只会让经济数值完全失控。
+func (r *Room) creditHubKills(inc []world.DamageEvent) {
 	for _, ev := range inc {
 		if !ev.IsKill {
 			continue
 		}
-		systems.GrantKillGold(r.World, ev.Src, ev.Dst)
+		systems.CreditHubKill(r.World, ev.Src, systems.GoldPerKill)
+	}
+}
+
+// settleClearedHubs 在据点刚清完时把它的金币池按贡献分给全队。
+//
+// 放在 tick 的波次更新之后：HubCleared 是 UpdateWaves 写进去的，早于它
+// 读不到「刚清完」。每据点只结算一次——用 KillGold 归零作为「已结算」
+// 的标记，而不是加一个 Settled 布尔：池子为 0 时结算本来就无事可做。
+//
+// 金币注入在这里而不是 SettleHub 内部：这样 SettleHub 是纯函数（只返回
+// 份额），而「哪一处把金币写进玩家」在全仓只有一个位置。
+func (r *Room) settleClearedHubs() {
+	if !r.World.HasMap {
+		return
+	}
+	for i := range r.World.Hubs {
+		h := &r.World.Hubs[i]
+		if h.State != world.HubCleared || h.KillGold == 0 {
+			continue
+		}
+		pool := h.KillGold
+		h.KillGold = 0
+		shares := systems.SettleHub(r.World, pool)
+		for _, s := range shares {
+			p := r.World.Players.Get(s.Player)
+			if p == nil {
+				continue
+			}
+			if p.Gold > math.MaxUint32-s.Gold {
+				p.Gold = math.MaxUint32
+			} else {
+				p.Gold += s.Gold
+			}
+		}
+		r.log.Info("据点分账", "hub", i, "pool", pool, "shares", len(shares))
 	}
 }
 

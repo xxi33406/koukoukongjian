@@ -20,6 +20,12 @@ type Hub struct {
 	//
 	// 用户拍板的规则：无油区；每种属性最多一个据点；其余据点无属性。
 	Element Element
+
+	// KillGold 是本据点累积的待分账金币池。
+	//
+	// 挂在 Hub 而不是 World：spec L79 要求「每据点重新计算」。挂 World
+	// 会让「哪个据点的钱」无法区分，两个据点同时清完时会混账。
+	KillGold uint32
 }
 
 // HubState 是据点波次的运行时状态。
