@@ -2,6 +2,7 @@ package room
 
 import (
 	"koukoukongjian/internal/game/build"
+	"koukoukongjian/internal/game/systems"
 	"koukoukongjian/internal/game/world"
 	"koukoukongjian/internal/snapshot"
 )
@@ -68,6 +69,18 @@ type peer struct {
 	// 窗口是两个独立的生命周期——池子耗尽时会有"开了窗口但没有候选"的
 	// 情况，用长度推断就会把它当成"不在窗口里"，无敌永远不开。
 	awaitingChoice bool
+
+	// rack 是这个玩家的私人货架（spec L83「每个玩家的商品列表不一样」）。
+	//
+	// 存在 peer 而不是 World：货架是每人不同的私有数据，与 pendingChoices
+	// 同类；room 已经按座位号管理 peer，天然是私有数据的容器。
+	rack []systems.ShopItem
+
+	// shopHub 是这个货架属于哪个据点。
+	//
+	// 玩家换据点后货架要重新生成，靠它判断「当前货架是不是这个据点的」。
+	// 不带这个字段的话，在 A 据点看中的第 1 项会在 B 据点按 B 的价格成交。
+	shopHub int
 }
 
 // peers 管理四个座位。

@@ -26,6 +26,13 @@ type Hub struct {
 	// 挂在 Hub 而不是 World：spec L79 要求「每据点重新计算」。挂 World
 	// 会让「哪个据点的钱」无法区分，两个据点同时清完时会混账。
 	KillGold uint32
+
+	// ShopOpen 表示这个据点的商店是否开着。
+	//
+	// 开放条件：据点清完（HubCleared）且有活人在据点内；关闭条件：
+	// 所有活玩家离开据点范围（spec L86「全队离开据点，商店关闭」）。
+	// 存 Hub 而不是 World：商店是「据点内的东西」，多个据点可能同时清完。
+	ShopOpen bool
 }
 
 // HubState 是据点波次的运行时状态。

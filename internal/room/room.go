@@ -83,6 +83,12 @@ type Room struct {
 	// 容量 MaxSlots×4 而非 ×8：交互是玩家按键触发（不是每帧的输入），
 	// 每人每秒最多几次；留 4 秒余量已经远超实际，满了丢弃不会积累。
 	interacts chan interactRequest
+	// shopBuys 是等待处理的买入请求（M6 Task 10）。
+	//
+	// 与 interacts 同款约束与同款理由：ShopBuy 由 bridge 的网络 goroutine
+	// 调用，而 World 归 tick goroutine 独占（AGENTS.md §2.5）。买入要写
+	// 玩家 Gold 与技能/道具槽位，直接写就是跨 goroutine 写。
+	shopBuys chan shopBuyRequest
 	// reliable 是房间要经可靠通道下发的消息（技能候选这类漏了就没法补救
 	// 的消息）。room 不 import netx（分层硬约束），所以这里只出一个通道，
 	// 由 bridge 那边泵到会话的可靠通道上。
@@ -176,6 +182,19 @@ type interactRequest struct {
 	reply chan error
 }
 
+// shopBuyRequest 是一次买入请求（M6 Task 10）。
+//
+// hub 由客户端带上来而不是服务端自己查：它能防住「在 A 据点点开商店、
+// 走到 B 据点才发买入」的时序问题——服务端拿它与自己记录的那个据点比，
+// 不一致就拒绝，而不是把 A 的货架按 B 的价格卖出去。
+type shopBuyRequest struct {
+	slot       int
+	hub        uint32
+	itemIndex  int
+	targetSlot int
+	reply      chan error
+}
+
 // ReliableMessage 是房间要经可靠通道下发的一条消息。
 //
 // Slot 是收件座位号；Data 是已编码的 Envelope。room 不碰会话，bridge 按
@@ -231,6 +250,7 @@ func New(cfg *config.Config, log *slog.Logger, opts Options) *Room {
 		leaves:       make(chan leaveRequest, MaxSlots),
 		choices:      make(chan choiceRequest, MaxSlots*4),
 		interacts:    make(chan interactRequest, MaxSlots*4),
+		shopBuys:     make(chan shopBuyRequest, MaxSlots*4),
 		reliable:     make(chan ReliableMessage, MaxSlots*8),
 		done:         make(chan struct{}),
 	}
@@ -432,6 +452,7 @@ func (r *Room) tick() {
 	r.drainInputs()
 	r.drainChoices()
 	r.drainInteracts()
+	r.drainShopBuys()
 
 	// 1. 重建空间索引（每 tick 一次，不是每子步）。
 	w.Grid.Rebuild(w.Monsters, w.Bullets, w.Players)
@@ -468,6 +489,10 @@ func (r *Room) tick() {
 		r.logHubChanges()
 		// 分账必须在 UpdateWaves 之后：HubCleared 是它写进去的。
 		r.settleClearedHubs()
+		// 商店开关也必须在分账之后：客户端收到的 ShopRack.gold 要包含
+		// 刚分到的那笔钱，否则「买得起」的东西显示成买不起。
+		r.updateShopOpen()
+		r.updateShopClose()
 	}
 
 	// 2. AI 决策（M3 Task 10）：每 tick 一次，循环放在子步循环之外、
@@ -1355,3 +1380,237 @@ func (r *Room) Seed() int64 { return r.seed }
 // 这是 World.Tick 的原子镜像。直接读 r.World.Tick 会与 tick 循环的写入
 // 撞车——那个字段只在 tick goroutine 里安全。
 func (r *Room) WorldTick() uint32 { return r.worldTick.Load() }
+
+// ShopBuy 处理一次买入请求（M6 Task 10）。
+//
+// 与 ApplyChoice / Interact 同款：网络 goroutine 投通道，tick goroutine
+// 消费，这里等回执。理由完全一样——世界由 tick goroutine 独占，跨
+// goroutine 直接改是数据竞争（AGENTS.md §2.5）。
+func (r *Room) ShopBuy(slot int, hub uint32, itemIndex, targetSlot int) error {
+	if r.stopped.Load() {
+		return ErrRoomStopped
+	}
+	req := shopBuyRequest{
+		slot:       slot,
+		hub:        hub,
+		itemIndex:  itemIndex,
+		targetSlot: targetSlot,
+		// 缓冲 1 的理由同 choiceRequest：tick 侧投回执是非阻塞的。
+		reply: make(chan error, 1),
+	}
+	select {
+	case r.shopBuys <- req:
+	case <-r.done:
+		return ErrRoomStopped
+	}
+	select {
+	case err := <-req.reply:
+		return err
+	case <-r.done:
+		return ErrRoomStopped
+	case <-time.After(choiceReplyTimeout):
+		return ErrInteractTimeout
+	}
+}
+
+// drainShopBuys 把本 tick 的买入请求排队处理。
+//
+// 与 drainInteracts 同款：非阻塞 for-select，处理完立刻回执。不能因为某个
+// 请求出错就停下——一个玩家的买入失败不该拖住其他玩家的。
+func (r *Room) drainShopBuys() {
+	for {
+		select {
+		case req := <-r.shopBuys:
+			err := r.applyShopBuyLocked(req)
+			select {
+			case req.reply <- err:
+			default:
+			}
+		default:
+			return
+		}
+	}
+}
+
+// applyShopBuyLocked 在 tick goroutine 里执行买入。
+//
+// 名字带 Locked 与 applyChoiceLocked / applyInteractLocked 对齐。
+func (r *Room) applyShopBuyLocked(req shopBuyRequest) error {
+	buyer := r.peers.at(req.slot)
+	if buyer == nil {
+		return errNoPeer
+	}
+	bp := r.World.Players.Get(buyer.id)
+	if bp == nil || bp.State != world.PlayerAlive {
+		return errNoPeer
+	}
+
+	// 据点必须开着商店，且与客户端以为的那个一致——防「在 A 据点开商店、
+	// 走到 B 据点才发买入」的时序问题。
+	if !r.World.HasMap || int(req.hub) >= len(r.World.Hubs) {
+		return ErrShopClosed
+	}
+	h := &r.World.Hubs[req.hub]
+	if !h.ShopOpen {
+		return ErrShopClosed
+	}
+	// 买家必须在据点范围内（spec L82「商店在据点内」）。
+	if bp.Pos.DistSq(h.Center) > h.RadiusM*h.RadiusM {
+		return ErrShopTooFar
+	}
+
+	// 收货人：默认自己（spec L84-85 替队友买）。
+	target := buyer
+	if req.targetSlot != req.slot {
+		target = r.peers.at(req.targetSlot)
+		if target == nil {
+			return errNoPeer
+		}
+	}
+	tp := r.World.Players.Get(target.id)
+	if tp == nil || tp.State != world.PlayerAlive {
+		// 替鬼魂买东西没有意义（它不能用），也防止"钱花了东西掉了"。
+		return ErrShopTargetDead
+	}
+
+	// 货架必须属于当前据点：玩家换据点后货架要重新生成，拿旧货架的
+	// 下标买新据点的东西会错位。
+	if buyer.shopHub != int(req.hub) || len(buyer.rack) == 0 {
+		return systems.ErrShopNoRack
+	}
+	if req.itemIndex < 0 || req.itemIndex >= len(buyer.rack) {
+		return systems.ErrShopItemIndex
+	}
+	it := buyer.rack[req.itemIndex]
+	if it.Sold {
+		return systems.ErrShopSold
+	}
+
+	// 钱从买家扣、东西给收货人。先扣款再给货，给货失败必须退款——
+	// 反过来（先给货再扣款）在扣款失败时会白送一件东西。
+	if err := systems.SpendGold(bp, it.Price); err != nil {
+		return systems.ErrShopNoGold
+	}
+	switch it.Kind {
+	case systems.ShopItemPassive:
+		if !systems.TryEquipSkill(tp, it.RefID) {
+			bp.Gold += it.Price
+			return ErrShopEquipFailed
+		}
+	case systems.ShopItemItem:
+		if !systems.EquipItem(tp, it.RefID) {
+			bp.Gold += it.Price
+			return ErrShopEquipFailed
+		}
+	default:
+		bp.Gold += it.Price
+		return ErrShopEquipFailed
+	}
+
+	buyer.rack[req.itemIndex].Sold = true
+	r.log.Info("商店成交", "slot", req.slot, "target", req.targetSlot,
+		"item", req.itemIndex, "price", it.Price)
+	return nil
+}
+
+// updateShopOpen 在据点清完时给全队生成私人货架并打开商店。
+//
+// 放在 tick 的波次更新之后：HubCleared 是 UpdateWaves 写进去的。
+func (r *Room) updateShopOpen() {
+	if !r.World.HasMap {
+		return
+	}
+	for i := range r.World.Hubs {
+		h := &r.World.Hubs[i]
+		// HubCleared 且还没开过：开。用 ShopOpen 自己作为「开过」的标记，
+		// 不另加字段——商店开着就是开着，没有第三种状态。
+		if h.State != world.HubCleared || h.ShopOpen {
+			continue
+		}
+		// 据点里得有一个活着的玩家才开：spec L82「商店在据点内、清完怪后
+		// 开放」，全队都在别的据点时这里没有人能看商店，生成货架只是
+		// 浪费 RNG 消耗（而那会让回放分叉）。
+		if !r.anyAliveNear(h.Center, h.RadiusM) {
+			continue
+		}
+		h.ShopOpen = true
+		r.peers.each(func(p *peer) {
+			ent := r.World.Players.Get(p.id)
+			if ent == nil || ent.State != world.PlayerAlive {
+				return
+			}
+			p.rack = systems.NewRack(r.World, assignedSkillIDs(ent, p))
+			p.shopHub = i
+			r.sendReliable(p.slot, &proto.Envelope{
+				Body: &proto.Envelope_ShopRack{
+					ShopRack: &proto.ShopRack{
+						Hub:   uint32(i),
+						Items: rackToProto(p.rack),
+						Gold:  ent.Gold,
+					},
+				},
+			})
+		})
+		r.log.Info("商店开放", "hub", i)
+	}
+}
+
+// updateShopClose 在全队离开据点后关闭商店（spec L86）。
+func (r *Room) updateShopClose() {
+	if !r.World.HasMap {
+		return
+	}
+	for i := range r.World.Hubs {
+		h := &r.World.Hubs[i]
+		if !h.ShopOpen {
+			continue
+		}
+		if r.anyAliveNear(h.Center, h.RadiusM) {
+			continue
+		}
+		h.ShopOpen = false
+		// 货架清空：spec L86「全队离开据点，商店关闭」，重新开放时
+		// 应该是新的一批商品（否则玩家可以「逛一圈回来买上次看中的」，
+		// 而那个行为在数值上等于无限库存）。
+		r.peers.each(func(p *peer) {
+			if p.shopHub == i {
+				p.rack = nil
+			}
+		})
+		r.log.Info("商店关闭", "hub", i)
+	}
+}
+
+// anyAliveNear 报告区域内是否有活着的玩家。
+//
+// 鬼魂不算：它们不能用商店，只有它们在场时开着商店没有意义。
+func (r *Room) anyAliveNear(pos world.Vec2, radius float64) bool {
+	r2 := radius * radius
+	var found bool
+	r.World.Players.Each(func(_ world.EntityID, p *world.PlayerState) bool {
+		if p.State != world.PlayerAlive {
+			return true
+		}
+		if p.Pos.DistSq(pos) <= r2 {
+			found = true
+			return false
+		}
+		return true
+	})
+	return found
+}
+
+// rackToProto 把货架转成协议结构。
+func rackToProto(rack []systems.ShopItem) []*proto.ShopItem {
+	out := make([]*proto.ShopItem, len(rack))
+	for i, it := range rack {
+		out[i] = &proto.ShopItem{
+			Index: uint32(it.Index),
+			Kind:  uint32(it.Kind),
+			RefId: uint32(it.RefID),
+			Price: it.Price,
+			Sold:  it.Sold,
+		}
+	}
+	return out
+}

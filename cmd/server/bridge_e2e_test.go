@@ -512,3 +512,56 @@ func TestInteractIsAcceptedButIgnored(t *testing.T) {
 	}
 	t.Fatal("Interact 之后等 Pong 超时：这条消息可能把会话读循环卡住了")
 }
+
+// TestShopBuyIsAcceptedAndDoesNotPanic 验证 ShopBuy 走通了 bridge 的接线。
+//
+// 与 TestInteractIsAcceptedButIgnored 同款：这里没有开商店的房间态（e2e
+// 起的是无波次的默认房间），所以买入必然被拒。断言只能取"连接仍可用"，
+// 真正守住的是「OnReliable 漏了 ShopBuy 这个 case 也不会有区别」这一点
+// —— 所以本用例的作用是：如果将来有人把 handleShopBuy 改成 panic 或
+// 阻塞，这里会红。
+//
+// 明确的反向证据在 room 层：TestRoomShopBuyBeforeOpenRejected 断言错误
+// 是 ErrShopClosed 而不是超时，那条才证明请求真的走到了商店逻辑。
+func TestShopBuyIsAcceptedAndDoesNotPanic(t *testing.T) {
+	h := startE2E(t)
+	c := dialE2E(t, h.addr, "shopper")
+
+	msg, err := proto.Marshal(&proto.Envelope{
+		Body: &proto.Envelope_ShopBuy{
+			ShopBuy: &proto.ShopBuy{Hub: 0, ItemIndex: 0, TargetSlot: 0},
+		},
+	})
+	if err != nil {
+		t.Fatalf("编码 ShopBuy 失败：%v", err)
+	}
+	if !c.Send(msg) {
+		t.Fatal("发送 ShopBuy 失败")
+	}
+
+	// 连接还活着：Ping 能收到 Pong。
+	ping, err := proto.Marshal(&proto.Envelope{
+		Body: &proto.Envelope_Ping{Ping: &proto.Ping{ClientTimeNs: 4242}},
+	})
+	if err != nil {
+		t.Fatalf("编码 Ping 失败：%v", err)
+	}
+	if !c.SendSnapshot(ping) {
+		t.Fatal("发送 Ping 失败")
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		raw := c.RecvSnapshot(200 * time.Millisecond)
+		if raw == nil {
+			continue
+		}
+		var env proto.Envelope
+		if err := proto.Unmarshal(raw, &env); err != nil {
+			continue
+		}
+		if pong, ok := env.Body.(*proto.Envelope_Pong); ok && pong.Pong.ClientTimeNs == 4242 {
+			return
+		}
+	}
+	t.Fatal("ShopBuy 之后等 Pong 超时：这条消息可能把会话读循环卡住了")
+}

@@ -38,6 +38,17 @@ var (
 	// 与 ErrChoiceTimeout 同源：tick 循环卡死时不能让 bridge 的会话读
 	// goroutine 永久粘在这个调用上。
 	ErrInteractTimeout = errors.New("room: 交互请求处理超时")
+	// ErrShopClosed 表示这个据点的商店没开。
+	//
+	// 商店态是房间逻辑（据点清完 + 有活人在内），systems 包看不到据点，
+	// 所以这一类错误必须定义在 room。
+	ErrShopClosed = errors.New("room: 商店未开放")
+	// ErrShopTooFar 表示买家不在据点范围内。
+	ErrShopTooFar = errors.New("room: 不在据点范围内")
+	// ErrShopTargetDead 表示收货人不是活着的玩家（替鬼魂买没有意义）。
+	ErrShopTargetDead = errors.New("room: 收货人不在场")
+	// ErrShopEquipFailed 表示货给不出去（道具槽满等情况），此时已退款。
+	ErrShopEquipFailed = errors.New("room: 装备失败")
 )
 
 // InputCommand 是一次玩家输入。

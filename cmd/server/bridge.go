@@ -67,6 +67,22 @@ type netBridge struct {
 	// 代价是多一个 goroutine 与一条队列，两者都常驻且容量个位数，
 	// 与它换来的故障隔离相比可以接受。
 	interacts chan interactApply
+
+	// shopBuys 是待应用的买入请求队列。
+	//
+	// 单独一条队列而不是塞进 interacts：买入可能在 tick 卡死时等满 1 秒，
+	// 而交互（开背包）是玩家的即时动作，被买入拖住的表现是"按了没反应"。
+	// 与 interacts/choices 分开的理由完全一样。
+	shopBuys chan shopBuyApply
+}
+
+// shopBuyApply 是一条待应用的买入请求。
+type shopBuyApply struct {
+	session    *netx.Session
+	slot       int
+	hub        uint32
+	itemIndex  int
+	targetSlot int
 }
 
 // interactApply 是一条待应用的交互请求。
@@ -131,6 +147,7 @@ func newNetBridge(ctx context.Context, r *room.Room, cfg *config.Config, log *sl
 		choices: make(chan choiceApply, choiceQueueSize),
 		// 交互队列容量与技能选择同量级：交互同样是按键触发的低频操作。
 		interacts: make(chan interactApply, choiceQueueSize),
+		shopBuys:  make(chan shopBuyApply, choiceQueueSize),
 	}
 	// 可靠下行的泵：房间只把"要发什么"投进通道，找会话是网桥的事
 	// （room 不 import netx，AGENTS.md §2.4）。放在构造函数里起，与
@@ -141,6 +158,8 @@ func newNetBridge(ctx context.Context, r *room.Room, cfg *config.Config, log *sl
 	go b.pumpChoices()
 	b.wg.Add(1)
 	go b.pumpInteracts()
+	b.wg.Add(1)
+	go b.pumpShopBuys()
 	return b
 }
 
@@ -187,6 +206,11 @@ func (b *netBridge) OnReliable(s *netx.Session, payload []byte) {
 		// 只能等窗口超时随机装一个。它也不像输入那样是覆盖式数据——选 A
 		// 和选 B 是不同的事实，不能只保留最后一条。
 		b.handleChooseSkill(s, body.ChooseSkill)
+	case *proto.Envelope_ShopBuy:
+		// M6 Task 10 接线：买入。走可靠通道是因为它是离散事务——
+		// 丢一条等于玩家按了没反应，而重发一条不会造成重复扣款
+		// （room 侧按货架下标 + Sold 标记幂等）。
+		b.handleShopBuy(s, body.ShopBuy)
 	case *proto.Envelope_Interact:
 		// M4 Task 10 接线：开背包（kind=2）走 room 的交互队列，由 tick
 		// goroutine 去写 PlayerState.InventoryOpenAt 与 Busy 位。
@@ -723,5 +747,61 @@ func (b *netBridge) leaveIfJoined(s *netx.Session) {
 	b.mu.Unlock()
 	if ok && joined && slot >= 0 {
 		b.r.Leave(slot)
+	}
+}
+
+// handleShopBuy 把买入请求投进队列。
+//
+// 结构照抄 handleInteract（同一套"锁内只取座位号、锁外投递"的理由）。
+func (b *netBridge) handleShopBuy(s *netx.Session, msg *proto.ShopBuy) {
+	b.mu.Lock()
+	cp, ok := b.peers[s.ID()]
+	var slot int
+	var joined bool
+	if ok {
+		slot, joined = cp.slot, cp.joined
+	}
+	b.mu.Unlock()
+
+	if !ok || !joined || slot < 0 {
+		b.log.Debug("未加入的会话发来买入", "session", s.ID())
+		return
+	}
+
+	select {
+	case b.shopBuys <- shopBuyApply{
+		session:    s,
+		slot:       slot,
+		hub:        msg.GetHub(),
+		itemIndex:  int(msg.GetItemIndex()),
+		targetSlot: int(msg.GetTargetSlot()),
+	}:
+	default:
+		// 队列满时丢弃：买入是玩家的显式点击，丢了他会再点一次，
+		// 而且下一次会看到刷新后的货架，比让会话读 goroutine 卡在这里好。
+		b.log.Debug("买入队列满，丢弃", "session", s.ID(), "slot", slot)
+	}
+}
+
+// pumpShopBuys 串行应用买入请求。
+//
+// 串行而非并发：ShopBuy 会把请求投进 room 的 shopBuys 队列并等回执，
+// 并发调用没有收益（room 侧本来就是 tick 级串行消费），却要多管一批
+// 生命周期。与 pumpInteracts / pumpChoices 同款。
+func (b *netBridge) pumpShopBuys() {
+	defer b.wg.Done()
+	for {
+		select {
+		case req := <-b.shopBuys:
+			if err := b.r.ShopBuy(req.slot, req.hub, req.itemIndex, req.targetSlot); err != nil {
+				// 拒绝原因多半是客户端行为（钱不够/商品已售出/不在据点内），
+				// Debug 足够，免得玩家反复点买不起的东西时刷屏。
+				b.log.Debug("买入被拒绝",
+					"session", req.session.ID(), "slot", req.slot,
+					"hub", req.hub, "item", req.itemIndex, "err", err)
+			}
+		case <-b.ctx.Done():
+			return
+		}
 	}
 }

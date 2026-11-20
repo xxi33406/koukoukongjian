@@ -169,6 +169,32 @@ message Inventory {
   repeated uint32 items = 3;          // 道具槽（上限 3），元素是道具种类编号
 }
 
+// ShopItem 是货架上的一项。
+message ShopItem {
+  uint32 index = 1;    // 货架下标（0-3），买的时候发这个
+  uint32 kind = 2;     // 0=被动技能 1=道具
+  uint32 ref_id = 3;   // 技能 ID 或道具 ID
+  uint32 price = 4;    // 价格（金币）
+  bool sold = 5;       // 已售出
+}
+
+// ShopRack 是发给某个玩家的私人货架（S→C 可靠）。
+//
+// 私人：每个玩家的货架内容不同，所以这条消息必须单播而不是广播。
+// spec L83「私人货架：每个玩家的商品列表不一样」。
+message ShopRack {
+  uint32 hub = 1;             // 商店所属据点下标
+  repeated ShopItem items = 2;
+  uint32 gold = 3;            // 玩家当前金币（客户端用来置灰买不起的项）
+}
+
+// ShopBuy 是客户端发起买入（C→S 可靠）。
+message ShopBuy {
+  uint32 hub = 1;           // 期望的据点（防玩家在 A 据点点开商店、走到 B 据点才发买入）
+  uint32 item_index = 2;    // 货架下标
+  uint32 target_slot = 3;   // 收货人座位号；等于自己就是给自己买（spec L84-85 替队友买）
+}
+
 message Snapshot {
   uint32 server_tick = 1;
   uint32 acked_input_tick = 2; // 供客户端校正本地预测
@@ -291,5 +317,9 @@ message Envelope {
     ChooseSkill choose_skill = 13;
     Interact interact = 14;
     Inventory inventory = 15;
+
+    // M6 商店。16 是私人货架下发，17 是买入请求。
+    ShopRack shop_rack = 16;
+    ShopBuy shop_buy = 17;
   }
 }
