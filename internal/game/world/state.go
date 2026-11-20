@@ -405,3 +405,62 @@ const (
 	PickupSkill
 	PickupItem
 )
+
+// ZoneKind 是区域效果的类型。
+//
+// 零值是「未指定」而不是某一种具体区域：池的 Spawn 会 `var zero T` 清零
+// 槽位（pool.go 的契约），若让 ZoneSteam = 0，每个刚 Spawn 还没被赋值的
+// 区域都会变成一片蒸汽云——而它可能只是一个等待填充的空槽。
+type ZoneKind uint8
+
+const (
+	ZoneUnspecified ZoneKind = iota // 0：空槽或未知
+	ZoneSteam                       // 蒸汽：范围内实体减速
+	ZoneIgnite                      // 燃烧：范围内怪物持续扣血（M7）
+	ZoneReflect                     // 反射面：队友子弹撞上来反向飞
+	ZoneConduct                     // 导电：范围内雷伤加成（M7）
+)
+
+func (k ZoneKind) String() string {
+	switch k {
+	case ZoneSteam:
+		return "steam"
+	case ZoneIgnite:
+		return "ignite"
+	case ZoneReflect:
+		return "reflect"
+	case ZoneConduct:
+		return "conduct"
+	default:
+		return "none"
+	}
+}
+
+// ZoneState 是一片区域效果（蒸汽云、燃烧地面、反射面）。
+//
+// 与 BulletState 的区别不是字段多少，而是语义：区域不动（没有 Vel）、
+// 按寿命消失（Life 秒）、对范围内的实体持续起作用。做成子弹的一个 Kind
+// 会让 IntegrateBullets 每帧推进一个速度为零的东西，更会逼 Collide
+// 去处理「区域持续影响」这个完全不同的事。
+type ZoneState struct {
+	Pos    Vec2
+	Radius float64 // 米
+	Life   float64 // 剩余寿命，秒
+
+	Kind ZoneKind
+
+	// OwnerID 是生成这个区域的人（施放反射面的人 / 触发交汇的那位）。
+	// 反射面用它把反射后的子弹归属改成区域主人；蒸汽云用它做伤害归属
+	// （M7 的燃烧区域要用）。
+	OwnerID EntityID
+
+	// Element 是区域携带的元素，供 M7 的连锁反应查询（燃烧地面遇水会
+	// 灭、导电区域遇水扩大）。v0.1 只在反射面上用它做快照下发。
+	Element Element
+
+	// SlowMul 是减速系数（1.0 = 不减速），只在 ZoneSteam 上有效。
+	//
+	// 存在区域上而不是写死常量：M7 的 Boss 可能有更强的减速，同一种
+	// 区域类型的不同强度靠这个字段区分，不必新增 Kind。
+	SlowMul float64
+}

@@ -6,6 +6,13 @@ import (
 	"koukoukongjian/internal/config"
 )
 
+// MaxZones 是区域效果池的容量上限。
+//
+// 定长而不走 MaxIndex（4096）：区域是重资源（每条都要被所有实体查询），
+// 一个据点同时存在几十条区域意味着玩法已经崩了。给一个硬上限让问题在
+// 开发期暴露成「区域生成失败」，而不是运行期变成帧率骤降。
+const MaxZones = 64
+
 // World 是一个房间的权威世界状态。
 //
 // 这里只有数据与访问器，没有系统逻辑——系统在 internal/game/systems，由
@@ -19,6 +26,13 @@ type World struct {
 	Monsters *Pool[MonsterState]
 	Bullets  *Pool[BulletState]
 	Pickups  *Pool[PickupState]
+
+	// Zones 是区域效果池（蒸汽云、燃烧地面、反射面）。
+	//
+	// 与 Bullets 分开的理由见 ZoneState 的注释。容量 64：一个据点同时
+	// 存在三条蒸汽云 + 两个反射面已经是极端情况，64 足够且定长数组
+	// 不产生运行期分配。
+	Zones *Pool[ZoneState]
 
 	// Grid 是空间索引，每个 tick 重建一次。
 	Grid *SpatialGrid
@@ -86,6 +100,7 @@ func NewWorld(cfg *config.Config, seed int64) *World {
 		Monsters: NewPool[MonsterState](128, MaxIndex),
 		Bullets:  NewPool[BulletState](cfg.Combat.MaxBullets, MaxIndex),
 		Pickups:  NewPool[PickupState](64, MaxIndex),
+		Zones:    NewPool[ZoneState](MaxZones, MaxZones),
 		Terrain:  NewTerrain(cfg.World.TerrainWidth, cfg.World.TerrainHeight, cfg.Space.TerrainCellSize),
 		Grid:     NewSpatialGrid(cfg.World.TerrainWidth, cfg.World.TerrainHeight, cfg.Space.TerrainCellSize, cfg.Space.SpatialCellSize),
 		RNG:      rand.New(rand.NewSource(seed)),
