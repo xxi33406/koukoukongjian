@@ -24,6 +24,21 @@ const (
 // 0.5 配 0.5s 重算间隔 ≈ 1 秒半衰期——新伤害能明显压过旧伤害。
 const aggroForget = 0.5
 
+// 距离惩罚两级的数值（M6，spec L60-61）。
+//
+// 分裂：怪的一次攻击拆成两次各 60% 伤害——「部分攻击分裂」的实现。
+// 两次分开结算让玩家有机会只吃到其中一次（走位），比「一次 120%」
+// 更有操作空间。
+//
+// 狂暴：速度 ×1.4、伤害 ×1.3。速度倍率低于 FastChaseMul（1.5）：
+// 反风筝已经是 1.5 倍，狂暴再叠上去会让玩家跑不掉，那是「惩罚」
+// 而不是「压力」。
+const (
+	splitDamageMul   = 0.60
+	enragedSpeedMul  = 1.4
+	enragedDamageMul = 1.3
+)
+
 // RescoreAggro 重算一只怪的仇恨目标（每 AggroRescoreTicks 一次）。
 // 视野 = SightRange 内且 Bresenham 视线可通（LineWalkable 含 supercover，
 // 共角不共边的墙缝挡视线）；隔墙不吸怪。
@@ -145,7 +160,27 @@ func UpdateMonster(w *world.World, m *world.MonsterState, dt float64) {
 			// 目标类别显式传 EntityClassPlayer：TargetID 来自仇恨锁定，
 			// 记的是玩家 id。不显式传会让 ResolveDamage 去怪物池里找这个
 			// 索引——两个池都是从 1 开始编号，撞号的怪会替玩家挨这一下。
-			w.ResolveDamage(world.InvalidID, m.TargetID, world.EntityClassPlayer, dmg, world.ElementNone, world.DamageTags{})
+			//
+			// 两级是 else-if 而不是两个独立 if：ApplySpreadToMonsters 保证
+			// 不会同时置两位，但标志位是外部可写的（快照、测试、将来的词条
+			// 都可能写）。两个独立 if 会让「狂暴 ×1.3 再分裂 ×1.2」叠成
+			// ×1.56，而玩家看到的是「我分开一次怪就变得莫名其妙地疼」——
+			// 这种加倍既不在设计里也没有任何反馈能让玩家猜到。
+			switch {
+			case m.Flags.Has(world.MonsterFlagEnraged):
+				// 极端分离（spec L61）：狂暴，伤害 ×1.3，单次结算。
+				w.ResolveDamage(world.InvalidID, m.TargetID, world.EntityClassPlayer,
+					dmg*enragedDamageMul, world.ElementNone, world.DamageTags{})
+			case m.Flags.Has(world.MonsterFlagSplits):
+				// 轻度分离（spec L60）：两次各 60% 的攻击，分别结算。
+				// 分开调 ResolveDamage 而不是乘 1.2 一次打——玩家有机会
+				// 只吃到其中一次（走位），比「一次 120%」更有操作空间。
+				half := dmg * splitDamageMul
+				w.ResolveDamage(world.InvalidID, m.TargetID, world.EntityClassPlayer, half, world.ElementNone, world.DamageTags{})
+				w.ResolveDamage(world.InvalidID, m.TargetID, world.EntityClassPlayer, half, world.ElementNone, world.DamageTags{})
+			default:
+				w.ResolveDamage(world.InvalidID, m.TargetID, world.EntityClassPlayer, dmg, world.ElementNone, world.DamageTags{})
+			}
 		}
 
 	case world.MonsterReturn:
@@ -166,6 +201,14 @@ func chaseSpeed(w *world.World, m *world.MonsterState, dist float64) float64 {
 	}
 	if m.ZoneSlowMul > 0 && m.ZoneSlowMul < 1 {
 		speed *= m.ZoneSlowMul
+	}
+	// 极端分离时狂暴（spec L61）：速度 ×1.4。
+	// 读标志位而不是读 w.Spread：标志位是「这只怪当前是什么状态」，
+	// 而 w.Spread 是「全队现在什么状态」——两者在 ApplySpreadToMonsters
+	// 之后一对一，但读标志位让 AI 不依赖「ApplySpreadToMonsters 是否
+	// 被调过」这个隐式前提。
+	if m.Flags.Has(world.MonsterFlagEnraged) {
+		speed *= enragedSpeedMul
 	}
 	return speed
 }

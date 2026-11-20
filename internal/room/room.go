@@ -457,6 +457,18 @@ func (r *Room) tick() {
 	// 1. 重建空间索引（每 tick 一次，不是每子步）。
 	w.Grid.Rebuild(w.Monsters, w.Bullets, w.Players)
 
+	// 1.05 距离惩罚分级（M6 Task 11，spec L59-62）：全队级别，每 tick 一次。
+	//
+	// 必须放在 AI 之前——AI 读 w.Spread / 怪物标志位决定是否分裂、狂暴，
+	// 排在后面会让惩罚永远晚一个 tick 生效（玩家分开后第一 tick 的怪
+	// 按旧等级行动）。
+	//
+	// 每 tick 都扫一遍怪物写标志，而不是「只在等级变化时写」：后者要多存
+	// 一个 prev，就多了一个可能与 w.Spread 不同步的状态。128 只怪的标志
+	// 位操作是微秒级，灰盒阶段选简单。
+	systems.UpdatePartySpread(w)
+	systems.ApplySpreadToMonsters(w)
+
 	// 1.2 鬼魂：拴绳 → 复活 → 团灭（M5 Task 11）。
 	//
 	// 顺序是语义，不是随手排的：

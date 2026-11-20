@@ -13,6 +13,30 @@ import (
 // 开发期暴露成「区域生成失败」，而不是运行期变成帧率骤降。
 const MaxZones = 64
 
+// SpreadLevel 是全队分离等级（spec L59-62 的两级距离惩罚）。
+type SpreadLevel uint8
+
+const (
+	// SpreadTogether 全队在一起：正常战斗。
+	SpreadTogether SpreadLevel = iota
+	// SpreadLight 轻度分离：怪物攻击部分分裂（spec L60）。
+	SpreadLight
+	// SpreadExtreme 极端分离：怪物狂暴，速度与攻击提升（spec L61）。
+	SpreadExtreme
+)
+
+// String 让日志与报告能直接打印等级名。
+func (s SpreadLevel) String() string {
+	switch s {
+	case SpreadLight:
+		return "light"
+	case SpreadExtreme:
+		return "extreme"
+	default:
+		return "together"
+	}
+}
+
 // World 是一个房间的权威世界状态。
 //
 // 这里只有数据与访问器，没有系统逻辑——系统在 internal/game/systems，由
@@ -89,6 +113,13 @@ type World struct {
 	//
 	// 房间继续跑（M5 拍板决定）：灰盒没有关卡脚本，停下就只剩重启能看。
 	Wiped bool
+
+	// Spread 是全队当前的分离等级（M6，spec L59-62）。
+	//
+	// 存 World 而不是 room：AI 在 internal/game/ai 层要读它决定怪物是否
+	// 分裂/狂暴，而那个包拿不到 room。每 tick 由 systems.UpdatePartySpread
+	// 刷新一次。
+	Spread SpreadLevel
 }
 
 // NewWorld 依据配置创建一个空世界。
