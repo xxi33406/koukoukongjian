@@ -1,6 +1,7 @@
 package systems
 
 import (
+	"koukoukongjian/internal/game/build"
 	"koukoukongjian/internal/game/world"
 )
 
@@ -32,19 +33,19 @@ const (
 // 一个有意义的决策点，而不是捡十个才见效。
 const DropHealthAmount = 30
 
-// SpawnDrops 在死亡位置掷骰生成掉落物。
+// SpawnDrops 在 pos 处按两条独立骰子决定掉落物。
+//
+// element 是「怪死在哪里」的元素属性：据点有属性时只掉该元素的技能，
+// 无属性（或该元素没有技能）时回退到全部主动技能。这是 spec L18
+// 「空间即资源」的实现点——死在哪决定掉什么。
 //
 // 两条概率独立判定（用户明确"两种会同时出现"）：先掷血瓶、再掷技能，
 // 互不影响。写成 if/else 会让两者互斥，而互斥在单次击杀上看不出来，
 // 只有统计能发现——所以 drop_test.go 里有 TestDropRates 钉概率值。
 //
-// skillID 由调用方给（room 从 build 技能表里挑）。不用 w.RNG 在这里抽
-// 技能：掉落什么技能是"关卡设计"的决定，不是模拟随机的一部分。
-// M6 位置死亡技能会把这里换成"按死亡位置查表"。
-//
 // 池满时静默丢弃（SpawnPickup 自己会返 InvalidID）：掉落是奖励，
 // 池满说明屏幕上已经全是东西，这时报错只会刷屏。
-func SpawnDrops(w *world.World, pos world.Vec2, skillID uint16) {
+func SpawnDrops(w *world.World, pos world.Vec2, element world.Element) {
 	if w == nil {
 		return
 	}
@@ -52,6 +53,37 @@ func SpawnDrops(w *world.World, pos world.Vec2, skillID uint16) {
 		SpawnPickup(w, pos, world.PickupHealth, 0, DropHealthAmount)
 	}
 	if w.RandFloat64() < DropSkillChance {
-		SpawnPickup(w, pos, world.PickupSkill, skillID, 0)
+		if id, ok := pickSkillForElement(w, element); ok {
+			SpawnPickup(w, pos, world.PickupSkill, id, 0)
+		}
 	}
+}
+
+// pickSkillForElement 按元素筛主动技能，空则回退到全部。
+//
+// 「回退」而不是「不掉」：三种元素在 M6 各只有一个技能，若某种元素的
+// 技能被移除（调参期常见），筛出来是空表。此时什么都不掉会让那个据点
+// 变成一个永远不掉技能的坏图，而这与「位置有意义」的意图完全相反。
+//
+// 随机数走 w.RandIntn 包装（不是裸 rand）：掉落属于模拟路径，消耗要计入
+// rngCalls 才能回放。
+func pickSkillForElement(w *world.World, element world.Element) (uint16, bool) {
+	all := build.ActiveSkills()
+	if len(all) == 0 {
+		return 0, false
+	}
+
+	if element != world.ElementNone {
+		var pool []build.Skill
+		for _, s := range all {
+			if s.Element == element {
+				pool = append(pool, s)
+			}
+		}
+		if len(pool) > 0 {
+			return pool[w.RandIntn(len(pool))].ID, true
+		}
+	}
+
+	return all[w.RandIntn(len(all))].ID, true
 }

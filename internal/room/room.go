@@ -1222,15 +1222,13 @@ func (r *Room) grantKillGold(inc []world.DamageEvent) {
 //
 // 必须在 Reap 之前调：Reap 会 Pool.Kill，槽位清零、位置没了。
 //
-// 技能的 ID 从主动技能表里随机挑一个——M5 掉"随机技能"，M6 位置死亡
-// 技能会改成按死亡位置查表（那时这个函数要知道死亡坐标与据点的关系）。
+// 位置死亡技能（spec L18「空间即资源」）：怪死在哪个据点，就掉那个据点
+// 属性的技能。没有地图（HasMap=false）时全靠 SpawnDrops 内部回退到全部
+// 主动技能——那种场景只有测试与 bot 会造。
+//
 // 走 w.RandIntn 包装而不是 rand.Intn：模拟路径必须让 rngCalls 计数完整，
 // 否则回放对不上（world.go 的 RNG 纪律）。
 func (r *Room) spawnLoot(inc []world.DamageEvent) {
-	skills := build.ActiveSkills()
-	if len(skills) == 0 {
-		return
-	}
 	for _, ev := range inc {
 		if !ev.IsKill {
 			continue
@@ -1239,9 +1237,36 @@ func (r *Room) spawnLoot(inc []world.DamageEvent) {
 		if m == nil {
 			continue // 已被别处回收，拿不到位置
 		}
-		s := skills[r.World.RandIntn(len(skills))]
-		systems.SpawnDrops(r.World, m.Pos, s.ID)
+		systems.SpawnDrops(r.World, m.Pos, r.hubElementAt(m.Pos))
 	}
+}
+
+// hubElementAt 返回 pos 所在据点的元素属性，不在任何据点内返回 ElementNone。
+//
+// 为什么不用 NearestAltar 的返回值：NearestAltar（hub.go:49）只回传位置，
+// 因为 M5 的复活系统只需要位置。给它加一个「哪个据点」的返回值会逼所有
+// 调用点改签名，而这里只要多查一次个位数长度的切片。等 M7 出现第三处
+// 需要「是哪个据点」时再抽 NearestHub(pos, radius) (int, bool)。
+//
+// 判定半径用 hub.RadiusM（据点范围 5 米）而不是系统的 AltarRadius（2.5 米）：
+// 传错会让据点的外圈算作「不在据点内」，那些怪掉落的技能不按元素筛。
+func (r *Room) hubElementAt(pos world.Vec2) world.Element {
+	best := world.ElementNone
+	var bestSq float64
+	var found bool
+	for i := range r.World.Hubs {
+		h := &r.World.Hubs[i]
+		d := pos.DistSq(h.Center)
+		if d > h.RadiusM*h.RadiusM {
+			continue
+		}
+		if !found || d < bestSq {
+			bestSq = d
+			best = h.Element
+			found = true
+		}
+	}
+	return best
 }
 
 // fire 让每个在座玩家按当前按键尝试开火。

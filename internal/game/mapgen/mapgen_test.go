@@ -323,3 +323,134 @@ func TestGenerateSentinelRestoresDirtyTerrain(t *testing.T) {
 		t.Errorf("哨兵应恢复全空地：可走格 %d / %d（残留墙 %d）", got, total, total-got)
 	}
 }
+
+// TestGenerateAssignsAtMostOneHubPerElement 钉住用户拍板的三条规则。
+//
+// spec 里位置死亡是「空间即资源」的核心机制，而规则的具体形态是用户
+// 定的：无油区、每种属性最多一个据点、其余无属性。三条都必须钉住，
+// 因为任何一条单独失守都不会让游戏崩，只会让「在哪杀」的策略空间
+// 悄悄变样——比如所有据点都是火区时，位置就完全不重要了。
+func TestGenerateAssignsAtMostOneHubPerElement(t *testing.T) {
+	for _, seed := range []int64{1, 2, 3, 42, 777} {
+		cfg := config.Default()
+		cfg.Map.HubCount = 7
+		w := world.NewWorld(cfg, seed)
+		if _, err := Generate(w, cfg); err != nil {
+			t.Fatalf("seed %d 生成失败：%v", seed, err)
+		}
+
+		count := map[world.Element]int{}
+		for _, h := range w.Hubs {
+			if h.Element == world.ElementOil {
+				t.Fatalf("seed %d 出现了油区据点——地图不应该有油区", seed)
+			}
+			count[h.Element]++
+		}
+
+		// 每种属性最多一个。
+		for el, n := range count {
+			if el == world.ElementNone {
+				continue
+			}
+			if n > 1 {
+				t.Fatalf("seed %d 的属性 %v 出现在 %d 个据点上，期望最多 1 个", seed, el, n)
+			}
+		}
+
+		// 三种属性都要出现（7 个据点足够放下三个）。
+		for _, el := range []world.Element{world.ElementFire, world.ElementWater, world.ElementThunder} {
+			if count[el] != 1 {
+				t.Fatalf("seed %d 的属性 %v 出现 %d 次，期望恰好 1 次（count=%v）", seed, el, count[el], count)
+			}
+		}
+
+		// 其余据点必须是 None（不是漏赋值）。
+		totalEle := count[world.ElementFire] + count[world.ElementWater] + count[world.ElementThunder]
+		if count[world.ElementNone] != len(w.Hubs)-totalEle {
+			t.Fatalf("seed %d：无属性据点 %d 个，期望 %d 个", seed, count[world.ElementNone], len(w.Hubs)-totalEle)
+		}
+	}
+}
+
+// TestGenerateFewHubsGetsFewerElements 钉住据点不足 3 个时的降级。
+//
+// 2 个据点放不下三种属性。必须「能放几个放几个」，而不是 panic 或者
+// 把两种属性塞到同一个据点。
+func TestGenerateFewHubsGetsFewerElements(t *testing.T) {
+	cfg := config.Default()
+	cfg.Map.HubCount = 2
+	w := world.NewWorld(cfg, 42)
+	if _, err := Generate(w, cfg); err != nil {
+		t.Fatalf("生成失败：%v", err)
+	}
+
+	ele := 0
+	for _, h := range w.Hubs {
+		if h.Element != world.ElementNone {
+			ele++
+		}
+	}
+	if ele != len(w.Hubs) {
+		t.Fatalf("2 个据点里有属性的 %d 个，期望 %d 个（每个据点分一种）", ele, len(w.Hubs))
+	}
+}
+
+// TestGenerateHubElementsAreDeterministic 钉住同种子可复现。
+//
+// 据点属性影响掉落，而掉落影响 RNG 消耗序列。若属性分配用了不经包装的
+// 随机源，同种子回放会分叉——那种分叉极难定位，因为地形与据点坐标
+// 看起来完全一致，只有后期掉落物不同。
+func TestGenerateHubElementsAreDeterministic(t *testing.T) {
+	var first []world.Element
+	for i := 0; i < 2; i++ {
+		cfg := config.Default()
+		cfg.Map.HubCount = 5
+		w := world.NewWorld(cfg, 2024)
+		if _, err := Generate(w, cfg); err != nil {
+			t.Fatalf("生成失败：%v", err)
+		}
+		got := make([]world.Element, len(w.Hubs))
+		for j, h := range w.Hubs {
+			got[j] = h.Element
+		}
+		if i == 0 {
+			first = got
+			continue
+		}
+		for j := range got {
+			if got[j] != first[j] {
+				t.Fatalf("据点 %d 的元素两次生成不同：%v vs %v", j, got[j], first[j])
+			}
+		}
+	}
+}
+
+// TestGenerateSpawnHubElementVaries 钉住「属性分配要洗牌」。
+//
+// 不洗牌也能通过另外三个测试：每种属性仍最多一个、无油区、同种子可复现。
+// 但 centers 的顺序由 placeHubs 的尝试顺序决定，而出生点永远是 0 号据点
+// （SpawnHub=0）——不洗牌的话出生据点会恒定拿到第一个候选（火），于是每
+// 一局的第一场战斗都发生在火区，玩家永远见不到「先在水区打」的开局。
+//
+// 这条测试跨 8 个种子统计出生据点的属性种类：洗牌后应当出现不止一种。
+// 只要求 ≥2 种（不是 ≥3）：7 个据点里只有 3 个带属性，出生点恰好命中
+// 某两种是完全正常分布的，要求三种会让测试本身变成一次概率赌博。
+func TestGenerateSpawnHubElementVaries(t *testing.T) {
+	seen := map[world.Element]int{}
+	for _, seed := range []int64{1, 2, 3, 42, 777, 2024, 9, 10} {
+		cfg := config.Default()
+		cfg.Map.HubCount = 7
+		w := world.NewWorld(cfg, seed)
+		if _, err := Generate(w, cfg); err != nil {
+			t.Fatalf("seed %d 生成失败：%v", seed, err)
+		}
+		if len(w.Hubs) == 0 {
+			t.Fatalf("seed %d 没有据点", seed)
+		}
+		seen[w.Hubs[w.SpawnHub].Element]++
+	}
+
+	if len(seen) < 2 {
+		t.Fatalf("8 个种子的出生据点只有 %d 种元素（%v）——属性分配可能没洗牌，出生点恒定拿同一个候选", len(seen), seen)
+	}
+}

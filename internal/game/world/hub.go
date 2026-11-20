@@ -11,6 +11,15 @@ type Hub struct {
 	NextAt  uint32       // 下一波刷怪的 tick 截止
 	WaveIDs [32]EntityID // 当前波怪物（Validate 保证 MonstersPerWave ≤ 32，定长免分配）
 	WaveN   int          // 当前波实际怪数
+
+	// Element 是这个据点的元素属性（ElementNone = 无属性）。
+	//
+	// 由 mapgen 生成时定死，不在运行时随机：属性是「地图的一部分」，
+	// 与据点坐标同源。运行时随机会让客户端无法预测（迷雾探开前渲染
+	// 不出颜色），回放也不可复现。
+	//
+	// 用户拍板的规则：无油区；每种属性最多一个据点；其余据点无属性。
+	Element Element
 }
 
 // HubState 是据点波次的运行时状态。

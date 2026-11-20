@@ -112,12 +112,21 @@ func Generate(w *world.World, cfg *config.Config) (*Result, error) {
 			continue
 		}
 
+		// 据点元素属性：无油区，每种最多一个，其余无属性（用户拍板）。
+		//
+		// 用洗牌的据点下标而不是「前 k 个据点」：mapgen 的 centers 顺序
+		// 由 placeHubs 的尝试顺序决定，而尝试顺序又受 RNG 影响，看起来
+		// 像随机——但它与「哪个据点是出生点」（SpawnHub=0，永远是第一个）
+		// 强耦合。洗牌保证出生点不会总是火区。
+		elems := assignHubElements(w, len(centers))
+
 		hubs := make([]world.Hub, len(centers))
 		for i, c := range centers {
 			hubs[i] = world.Hub{
 				Center:  world.V((float64(c.cx)+0.5)*cell, (float64(c.cy)+0.5)*cell),
 				RadiusM: float64(hubR) * cell,
 				State:   world.HubIdle,
+				Element: elems[i],
 			}
 		}
 		res := &Result{Hubs: hubs, SpawnHub: 0}
@@ -357,4 +366,47 @@ func cellOf(p world.Vec2, W, H int, cell float64) cellPos {
 		cy = H - 1
 	}
 	return cellPos{cx, cy}
+}
+
+// assignHubElements 给 n 个据点分配元素属性，返回长度 n 的切片。
+//
+// 规则（用户拍板）：候选只有 Fire/Water/Thunder（无 Oil）；每种最多
+// 一个据点；其余为 ElementNone。所以最多 3 个据点带属性。
+//
+// 用「洗牌下标 + 取前 k 个」而不是「随机挑据点然后标记已用」：后者的
+// 重试次数不确定，RNG 消耗序列会随据点分布浮动，而掉落物的随机数
+// 紧接在 mapgen 之后——RNG 消耗差一次，整局的掉落序列就全变了。
+// 洗牌的消耗是确定的：n-1 次 RandIntn。
+func assignHubElements(w *world.World, n int) []world.Element {
+	out := make([]world.Element, n)
+	if n == 0 {
+		return out
+	}
+
+	// 候选顺序固定，保证「先火再水后雷」的优先级可复现。
+	candidates := []world.Element{
+		world.ElementFire,
+		world.ElementWater,
+		world.ElementThunder,
+	}
+
+	// Fisher-Yates 洗牌下标。
+	idx := make([]int, n)
+	for i := range idx {
+		idx[i] = i
+	}
+	for i := n - 1; i > 0; i-- {
+		j := w.RandIntn(i + 1)
+		idx[i], idx[j] = idx[j], idx[i]
+	}
+
+	// 取前 min(3, n) 个据点，按 candidates 的顺序赋。
+	k := len(candidates)
+	if k > n {
+		k = n
+	}
+	for i := 0; i < k; i++ {
+		out[idx[i]] = candidates[i]
+	}
+	return out
 }

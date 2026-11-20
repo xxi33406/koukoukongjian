@@ -3,6 +3,7 @@ package systems
 import (
 	"testing"
 
+	"koukoukongjian/internal/game/build"
 	"koukoukongjian/internal/game/world"
 )
 
@@ -31,7 +32,7 @@ func TestSpawnDropsRollsIndependently(t *testing.T) {
 
 	for i := 0; i < 400; i++ {
 		clearPickups(w)
-		SpawnDrops(w, world.V(10, 10), 6)
+		SpawnDrops(w, world.V(10, 10), world.ElementNone)
 
 		kinds := map[world.PickupKind]int{}
 		w.Pickups.Each(func(_ world.EntityID, pk *world.PickupState) bool {
@@ -57,7 +58,7 @@ func TestDropRates(t *testing.T) {
 	healthN, skillN := 0, 0
 	for i := 0; i < n; i++ {
 		clearPickups(w)
-		SpawnDrops(w, world.V(10, 10), 6)
+		SpawnDrops(w, world.V(10, 10), world.ElementNone)
 		w.Pickups.Each(func(_ world.EntityID, pk *world.PickupState) bool {
 			switch pk.Kind {
 			case world.PickupHealth:
@@ -91,7 +92,7 @@ func TestSpawnDropsSetTTL(t *testing.T) {
 	var got []*world.PickupState
 	for i := 0; i < 200 && len(got) == 0; i++ {
 		clearPickups(w)
-		SpawnDrops(w, world.V(10, 10), 6)
+		SpawnDrops(w, world.V(10, 10), world.ElementNone)
 		w.Pickups.Each(func(_ world.EntityID, pk *world.PickupState) bool {
 			got = append(got, pk)
 			return true
@@ -115,7 +116,7 @@ func TestSpawnDropsAtKillPosition(t *testing.T) {
 	var got []*world.PickupState
 	for i := 0; i < 200 && len(got) == 0; i++ {
 		clearPickups(w)
-		SpawnDrops(w, pos, 6)
+		SpawnDrops(w, pos, world.ElementNone)
 		w.Pickups.Each(func(_ world.EntityID, pk *world.PickupState) bool {
 			got = append(got, pk)
 			return true
@@ -139,5 +140,98 @@ func TestSpawnDropsWhenPoolFull(t *testing.T) {
 			break
 		}
 	}
-	SpawnDrops(w, world.V(10, 10), 6) // 不该 panic
+	SpawnDrops(w, world.V(10, 10), world.ElementNone) // 不该 panic
+}
+
+// TestSpawnDropsPrefersElementSkills 钉住按元素筛技能。
+//
+// 位置死亡的语义是「死在哪决定掉什么」。传 Fire 时只能掉火系技能，
+// 这是它与 M5「随机挑一个主动技能」的全部区别。
+//
+// 收集**每一次**掉出的技能而不是只看第一个：主动技能表里 8 条中只有 1 条
+// 带 Fire 元素，若能掉出不筛选的随机技能，那么连续十几次里几乎必然出现
+// 非火系。只看第一个会让这个测试在 seed 恰好先掷出火系时变成假绿——
+// 变异测试（把筛选条件改成 false）立刻暴露了这一点。
+func TestSpawnDropsPrefersElementSkills(t *testing.T) {
+	w := newSystemsWorld(t, 7)
+
+	var got []uint16
+	for i := 0; i < 200 && len(got) < 20; i++ {
+		clearPickups(w)
+		SpawnDrops(w, world.V(20, 20), world.ElementFire)
+		w.Pickups.Each(func(_ world.EntityID, pk *world.PickupState) bool {
+			if pk.Kind == world.PickupSkill {
+				got = append(got, pk.RefID)
+			}
+			return true
+		})
+	}
+	if len(got) == 0 {
+		t.Fatal("200 次触发都没掉出技能（5% 概率下约 0.003% 的概率，怀疑实现有误）")
+	}
+
+	for _, ref := range got {
+		s, ok := build.SkillByID(ref)
+		if !ok {
+			t.Fatalf("掉出的技能 ID %d 在表里不存在", ref)
+		}
+		if s.Element != world.ElementFire {
+			t.Fatalf("火区掉出了元素为 %v 的技能（%s），期望 ElementFire（本次共掉出 %d 个）",
+				s.Element, s.Name, len(got))
+		}
+	}
+}
+
+// TestSpawnDropsNoElementFallsBackToAllActive 钉住无属性据点的回退。
+//
+// 多数据点没有属性（用户规则：每种属性最多一个）。那些据点必须能正常
+// 掉技能，只是不筛选——否则 7 个据点里有 4 个永远不掉技能。
+func TestSpawnDropsNoElementFallsBackToAllActive(t *testing.T) {
+	w := newSystemsWorld(t, 7)
+
+	var got bool
+	for i := 0; i < 200; i++ {
+		clearPickups(w)
+		SpawnDrops(w, world.V(20, 20), world.ElementNone)
+		w.Pickups.Each(func(_ world.EntityID, pk *world.PickupState) bool {
+			if pk.Kind == world.PickupSkill {
+				got = true
+			}
+			return true
+		})
+		if got {
+			break
+		}
+	}
+	if !got {
+		t.Fatal("无属性据点 200 次都没掉出技能——回退到全部主动技能的逻辑没生效")
+	}
+}
+
+// TestSpawnDropsElementWithNoSkillFallsBack 钉住「属性存在但库里没有该元素技能」。
+//
+// M6 三种元素各只有一个技能，若将来某种元素的技能被移除，筛出来是空
+// 列表。此时必须回退到全部主动技能，而不是「什么都不掉」——后者会让
+// 那个据点变成一个永远不掉技能的坏图。
+func TestSpawnDropsElementWithNoSkillFallsBack(t *testing.T) {
+	w := newSystemsWorld(t, 7)
+
+	// 用一个表里没有技能的元素（Oil 在 v0.1 没有对应技能）。
+	var got bool
+	for i := 0; i < 200; i++ {
+		clearPickups(w)
+		SpawnDrops(w, world.V(20, 20), world.ElementOil)
+		w.Pickups.Each(func(_ world.EntityID, pk *world.PickupState) bool {
+			if pk.Kind == world.PickupSkill {
+				got = true
+			}
+			return true
+		})
+		if got {
+			break
+		}
+	}
+	if !got {
+		t.Fatal("Oil 元素筛出空列表后没有回退到全部主动技能")
+	}
 }
