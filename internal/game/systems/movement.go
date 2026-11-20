@@ -178,6 +178,17 @@ func Integrate(p *world.PlayerState, dt float64, tr *world.Terrain) {
 	}
 
 	speed := PlayerSpeed * speedMul
+
+	// 区域减速（蒸汽云）。与 SpeedBuffMul 不同：它是环境效果，每子步由
+	// TickZoneSlow 重算，走出云的那一刻就恢复，不像冲刺那样走完为止。
+	//
+	// 判据是 > 0 而不是 != 0：零值（Pool.Spawn 出来的未初始化槽位）必须
+	// 退化成「不减速」，而不是 speed *= 0 把人彻底冻住。
+	// 也只在 < 1 时乘：1.0 是「无影响」，>1 是加速——两种都不该改变速度。
+	if p.ZoneSlowMul > 0 && p.ZoneSlowMul < 1 {
+		speed *= p.ZoneSlowMul
+	}
+
 	p.Vel = world.V(p.MoveIntent.X*speed, p.MoveIntent.Y*speed)
 
 	// 子步位移切成等长小段逐段判定。最后一段允许更短，保证总位移精确。

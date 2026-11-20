@@ -155,11 +155,19 @@ func UpdateMonster(w *world.World, m *world.MonsterState, dt float64) {
 }
 
 // chaseSpeed 反风筝：目标超过 FastChaseDist 时按倍率加速（server-design §7）。
+//
+// 末尾乘上区域减速（蒸汽云）：与玩家同一条规则，蒸汽云不区分敌我。
+// 只在 ZoneSlowMul 落在 (0,1) 时乘——零值是池里未初始化的槽位（必须
+// 退化成不减速，否则 speed *= 0 让怪永久定住），1.0 是无影响。
 func chaseSpeed(w *world.World, m *world.MonsterState, dist float64) float64 {
+	speed := w.Mon.Speed
 	if dist > w.Mon.FastChaseDist {
-		return w.Mon.Speed * w.Mon.FastChaseMul
+		speed *= w.Mon.FastChaseMul
 	}
-	return w.Mon.Speed
+	if m.ZoneSlowMul > 0 && m.ZoneSlowMul < 1 {
+		speed *= m.ZoneSlowMul
+	}
+	return speed
 }
 
 func attackCooldownTicks(w *world.World) uint32 {

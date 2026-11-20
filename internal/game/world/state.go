@@ -129,6 +129,16 @@ type PlayerState struct {
 	// 取到的倍率该陪着这次效果走完。
 	SpeedBuffMul float64
 
+	// ZoneSlowMul 是区域效果给的减速倍率（1.0 = 不减速）。
+	//
+	// 与 SpeedBuffMul 分开是因为语义不同：后者是玩家自己的增益（冲刺，
+	// 施放时快照、走完为止），前者是环境（走出蒸汽云那一刻就该恢复）。
+	// 每子步由 systems.TickZoneSlow 重置为 1.0 再按区域重设。
+	//
+	// 零值会让速度变成 0：Integrate 里的判据是 `if p.ZoneSlowMul > 0`，
+	// 所以未初始化的槽位退化成「不减速」而不是「冻住」。
+	ZoneSlowMul float64
+
 	// InventoryOpenAt 是开背包引导的**结束 tick 号**，0 表示当前没在引导。
 	//
 	// 与上面几个限时效果用秒数相反，这里刻意用 tick 号。判据不是风格而是
@@ -303,6 +313,11 @@ type MonsterState struct {
 	// 旧注释「0 号槽保留、实际索引 ≤3」的论证是错的。）
 	AggroDmg [5]float64 // 近期伤害（指数遗忘：rescore 时 ×0.5）
 	AttackAt uint32     // 上次攻击的 tick（冷却判定）
+
+	// ZoneSlowMul 是区域减速（1.0 = 不减速），语义同 PlayerState 的那个。
+	// 怪物也吃蒸汽云：spec 没区分敌我，而「把怪推进蒸汽云」本身就是一种
+	// 战术选择，只减速玩家会让蒸汽云变成纯负面地形。
+	ZoneSlowMul float64
 
 	// —— 计时器（单位：tick）——
 	AggroRescoreAt uint32
