@@ -125,6 +125,8 @@ func CastActive(w *world.World, id world.EntityID, slot int, p *world.PlayerStat
 		p.InvulnLeft = s.DurationS
 	case build.SkillIDReflect:
 		castReflect(w, id, p, s)
+	case build.SkillIDFlame, build.SkillIDWave, build.SkillIDBolt:
+		castElemental(w, id, p, s)
 	default:
 		// 表里新增了主动技能但这里没接线：不设冷却、返回 false。
 		// 静默设冷却会让玩家按了没效果却进冷却，比"没反应"更难查。
@@ -230,4 +232,44 @@ func countdown(left, dt float64) float64 {
 // 和「没放出来」，脚下一放就能立刻看到镜子在自己身上。
 func castReflect(w *world.World, id world.EntityID, p *world.PlayerState, s build.Skill) {
 	SpawnZone(w, p.Pos, s.Radius, s.DurationS, world.ZoneReflect, id, world.ElementNone)
+}
+
+// castElemental 是三个元素技能的共同实现：对半径内的怪物造成带元素的伤害。
+//
+// 三个技能共用一条路径而不是各写一份：它们的差别只在数值与元素，任何
+// 一个单独写都会在 M7 加元素反应时被漏掉。形状复用 castBurst 的
+// 「先收集再结算」——遍历中改状态是未定义行为（Pool.Each 按槽位走，
+// ResolveDamage 可能置死亡标志，Reap 在别处统一回收）。
+//
+// 元素一路传进 ResolveDamage：M6 的伤害数值不看元素，但 DamageEvent.Element
+// 是 M7 连锁反应的输入。等到那时才补会要重走所有施放路径。
+//
+// 返回事件而不是丢弃：M6 没有任何生产代码消费元素，若这里也丢掉返回值，
+// 「元素真的传进去了」就成了无法被测试观察的事实——变异测试证实把 s.Element
+// 改成 world.ElementNone 后所有用例仍然全绿。返回事件让测试能断言它。
+// CastActive 里的调用点忽略返回值（Go 允许语句形式调用），将来 M7 要拿
+// 事件做连锁反应时直接接上即可。
+func castElemental(w *world.World, id world.EntityID, p *world.PlayerState, s build.Skill) []world.DamageEvent {
+	r2 := s.Radius * s.Radius
+	var hit []world.EntityID
+	w.Monsters.Each(func(mid world.EntityID, m *world.MonsterState) bool {
+		// 这里的 IsDead 过滤是提前跳过而不是正确性保证：ResolveDamage 自己
+		// 也会挡尸体（damage.go 的 IsDead 早返回）。留着是为了不为必然
+		// 返回零值的事件走一遍函数调用，与 castBurst 的形状保持一致。
+		if m.IsDead() {
+			return true
+		}
+		if m.Pos.DistSq(p.Pos) <= r2 {
+			hit = append(hit, mid)
+		}
+		return true
+	})
+	var events []world.DamageEvent
+	for _, mid := range hit {
+		ev := w.ResolveDamage(id, mid, world.EntityClassMonster, s.Amount, s.Element, world.DamageTags{})
+		if ev.Amount > 0 {
+			events = append(events, ev)
+		}
+	}
+	return events
 }

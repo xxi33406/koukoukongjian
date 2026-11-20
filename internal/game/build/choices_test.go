@@ -269,7 +269,7 @@ func TestChoicesDoNotMutateTable(t *testing.T) {
 			t.Fatalf("技能表第 %d 条从 ID %d 变成 %d，期望顺序不变", i, before[i].ID, after[i].ID)
 		}
 	}
-	if len(ActiveSkills()) != 5 || len(PassiveSkills()) != 4 {
-		t.Fatalf("抽样后池子变成主动 %d / 被动 %d，期望 5 / 4", len(ActiveSkills()), len(PassiveSkills()))
+	if len(ActiveSkills()) != 8 || len(PassiveSkills()) != 4 {
+		t.Fatalf("抽样后池子变成主动 %d / 被动 %d，期望 8 / 4", len(ActiveSkills()), len(PassiveSkills()))
 	}
 }

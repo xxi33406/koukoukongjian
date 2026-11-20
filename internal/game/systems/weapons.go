@@ -62,7 +62,7 @@ var WeaponTable = []Weapon{
 		BulletLife:  1.1,
 		BulletRad:   0.18,
 		Damage:      32,
-		Element:     world.ElementNone,
+		Element:     world.ElementFire,
 	},
 }
 

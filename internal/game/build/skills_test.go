@@ -7,10 +7,10 @@ import "testing"
 // 用数量而不是"至少几个"：多出来的一条和少一条一样可疑，会直接改变
 // 选择界面的候选数（Task 6 的 3 选 1 依赖池子大小）。
 //
-// M6 起主动多一条（12 号反射面）；9/10/11 三条元素技能在 Task 7 加。
+// M6 加了四条主动：9/10/11 三条元素技能 + 12 号反射面。被动仍是四条。
 func TestSkillTableShape(t *testing.T) {
-	if got := len(ActiveSkills()); got != 5 {
-		t.Fatalf("主动技能 %d 个，期望 5", got)
+	if got := len(ActiveSkills()); got != 8 {
+		t.Fatalf("主动技能 %d 个，期望 8", got)
 	}
 	if got := len(PassiveSkills()); got != 4 {
 		t.Fatalf("被动技能 %d 个，期望 4", got)
@@ -24,7 +24,7 @@ func TestSkillTableShape(t *testing.T) {
 // 「用值推断状态」那类根因。
 func TestSkillIDsUnique(t *testing.T) {
 	all := SkillTable()
-	if got, want := len(all), 9; got != want {
+	if got, want := len(all), 12; got != want {
 		t.Fatalf("技能表 %d 条，期望 %d 条", got, want)
 	}
 	seen := make(map[uint16]string, len(all))
@@ -41,39 +41,31 @@ func TestSkillIDsUnique(t *testing.T) {
 
 // TestSkillByID 钉住查表：已知 ID 取得到且 Kind 正确，未知 ID 返回 false。
 func TestSkillByID(t *testing.T) {
-	known := []struct {
-		id   uint16
-		kind SkillKind
-	}{
-		{1, SkillKindPassive},
-		{2, SkillKindPassive},
-		{3, SkillKindPassive},
-		{4, SkillKindPassive},
-		{5, SkillKindActive},
-		{6, SkillKindActive},
-		{7, SkillKindActive},
-		{8, SkillKindActive},
-	}
+	// known 从表本身推出来，而不是手抄一份 ID→Kind 的表：手抄的那份每次
+	// 加技能都要跟着改，改漏了就会在「新增技能」这种与查表无关的改动上
+	// 报一条假失败。这里验证的是「SkillByID 与 SkillTable 一致」。
+	known := SkillTable()
 	for _, c := range known {
-		s, ok := SkillByID(c.id)
+		s, ok := SkillByID(c.ID)
 		if !ok {
-			t.Fatalf("SkillByID(%d) 返回 ok=false，期望 true", c.id)
+			t.Fatalf("SkillByID(%d) 返回 ok=false，期望 true", c.ID)
 		}
-		if s.ID != c.id {
-			t.Fatalf("SkillByID(%d) 取到 ID %d，期望 %d", c.id, s.ID, c.id)
+		if s.ID != c.ID {
+			t.Fatalf("SkillByID(%d) 取到 ID %d，期望 %d", c.ID, s.ID, c.ID)
 		}
-		if s.Kind != c.kind {
-			t.Fatalf("技能 %d 的 Kind 是 %d，期望 %d", c.id, s.Kind, c.kind)
+		if s.Kind != c.Kind {
+			t.Fatalf("技能 %d 的 Kind 是 %d，期望 %d", c.ID, s.Kind, c.Kind)
 		}
 		if s.Name == "" {
-			t.Fatalf("技能 %d 的 Name 为空", c.id)
+			t.Fatalf("技能 %d 的 Name 为空", c.ID)
 		}
 		if s.Desc == "" {
-			t.Fatalf("技能 %d 的 Desc 为空，玩家看不到效果说明", c.id)
+			t.Fatalf("技能 %d 的 Desc 为空，玩家看不到效果说明", c.ID)
 		}
 	}
 
-	for _, id := range []uint16{0, 9, 999, 65535} {
+	// 0 是空槽哨兵；其余取远高于当前表规模的号，避免每次加技能都要改这一行。
+	for _, id := range []uint16{0, 999, 65535} {
 		if s, ok := SkillByID(id); ok {
 			t.Fatalf("未知技能 ID %d 返回 ok=true（取到 %q），期望 false", id, s.Name)
 		}

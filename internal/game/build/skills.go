@@ -1,6 +1,7 @@
 // Package build 是构筑系统：技能定义、候选生成（Task 6）、属性结算（Task 5）。
 //
-// 分层：只允许 import world；当前这张表是纯数据，连 world 都用不上。
+// 分层：只允许 import world。M6 起表里带元素（world.Element），所以真的
+// 用上了这个依赖——它只是常量类型，不引入任何反向依赖。
 // 由 systems（效果执行）与 room（选择流程）调用。
 //
 // 技能表先用代码常量（沿用 M2 WeaponTable 的先例）：M4 没有编辑器，
@@ -9,6 +10,8 @@
 // 与 WeaponTable 的差别（那次是导出 var，任何包都能就地改数值）：
 // 这里内部表未导出，对外只给返回副本的访问函数——见 SkillTable 的说明。
 package build
+
+import "koukoukongjian/internal/game/world"
 
 // SkillKind 区分被动与主动。
 //
@@ -61,6 +64,16 @@ type Skill struct {
 	DurationS float64 // 持续类技能的时长，秒
 	Amount    float64 // 治疗量 / 爆发伤害
 	Radius    float64 // 爆发半径，米
+
+	// Element 是这个技能携带的元素（无元素 = ElementNone）。
+	//
+	// 元素在此刻用于两件事：①位置死亡技能按据点元素筛技能（M6 Task 8）；
+	// ②M7 的连锁反应。当前元素技能的作用方式是区域伤害、不发射子弹，
+	// 所以这个字段不直接影响伤害数值。
+	//
+	// 但必须在施放时就传进 ResolveDamage：等到 M7 要用元素时才发现
+	// 一路都在传 ElementNone，改起来要重新走一遍所有施放路径。
+	Element world.Element
 }
 
 // 技能 ID。数值写进协议与存档，只能追加不能改号。
@@ -183,6 +196,48 @@ var skillTable = [...]Skill{
 		CooldownS: 12.0,
 		DurationS: 3.0,
 		Radius:    2.0,
+	},
+
+	// —— M6：元素技能 ——
+	//
+	// 三条都是「区域伤害」而不是「发射带元素的子弹」：发射子弹需要新的
+	// 技能弹通道（现有 spawnBullet 只服务武器，读 WeaponID 与 DamageMul），
+	// 而区域伤害复用 castBurst 的形状即可。等 M7 需要技能弹幕与武器弹幕
+	// 交汇时再加通道。
+	//
+	// 数值节奏：火焰 20 伤 / 8 秒，水波 12 伤 / 7 秒，雷击 40 伤 / 10 秒。
+	// 伤害与冷却的比值都在 2.5~4 之间，与 6 号环形爆发（25 伤 / 5 秒 = 5）
+	// 相比偏低——元素技能的额外价值来自与其他弹幕的反应，不来自裸伤害，
+	// 所以裸数值刻意不做成上位替代。
+	{
+		ID:        SkillIDFlame,
+		Name:      "火焰喷射",
+		Kind:      SkillKindActive,
+		Desc:      "向前喷出火焰，范围内造成 20 点火焰伤害。",
+		Element:   world.ElementFire,
+		CooldownS: 8.0,
+		Amount:    20.0,
+		Radius:    3.5,
+	},
+	{
+		ID:        SkillIDWave,
+		Name:      "水波",
+		Kind:      SkillKindActive,
+		Desc:      "向四周推开敌人，造成 12 点水伤害。",
+		Element:   world.ElementWater,
+		CooldownS: 7.0,
+		Amount:    12.0,
+		Radius:    4.0,
+	},
+	{
+		ID:        SkillIDBolt,
+		Name:      "雷击",
+		Kind:      SkillKindActive,
+		Desc:      "对近处敌人造成 40 点雷伤害。",
+		Element:   world.ElementThunder,
+		CooldownS: 10.0,
+		Amount:    40.0,
+		Radius:    1.5,
 	},
 }
 
