@@ -268,6 +268,41 @@ message GameEvent {
   uint32 element = 5;
 }
 
+// ---------- 结算（M7） ----------
+
+// MatchOutcome 是本局终态。三值而不是 bool：房间可能既没团灭也没通关
+//（进程被 kill、玩家全部离开），那必须能表达成 UNSPECIFIED。
+enum MatchOutcome {
+  MATCH_OUTCOME_UNSPECIFIED = 0;
+  MATCH_OUTCOME_WIPED = 1;    // 团灭：全队变鬼魂（spec L52）
+  MATCH_OUTCOME_CLEARED = 2;  // 通关：全部据点清完且 Boss 被击败
+}
+
+// MatchPlayer 是一名玩家在一局里的战绩。
+// 字段名与 server-design §11.1 的 player_result 表一致——前端不必自己
+// 发明名字，也便于日后对着数据库列核对。
+message MatchPlayer {
+  uint32 slot = 1;
+  double damage = 2;
+  double contribute = 3;
+  uint32 kills = 4;
+  uint32 reflect_kills = 5;
+  uint32 deaths = 6;
+  uint32 gold = 7;
+}
+
+// MatchResult 是一局的结果。
+message MatchResult {
+  string room_id = 1;
+  int64 world_seed = 2;
+  int64 started_at = 3;   // Unix 秒
+  int64 ended_at = 4;
+  MatchOutcome outcome = 5;
+  uint32 max_wave = 6;
+  int64 duration_sec = 7;
+  repeated MatchPlayer players = 8;
+}
+
 // ---------- 其他上行 ----------
 
 // Ping 每 500ms 一次，用于 RTT 采样。
@@ -321,5 +356,8 @@ message Envelope {
     // M6 商店。16 是私人货架下发，17 是买入请求。
     ShopRack shop_rack = 16;
     ShopBuy shop_buy = 17;
+
+    // M7 结算。18 是终局结果（S→C）。
+    MatchResult match_result = 18;
   }
 }

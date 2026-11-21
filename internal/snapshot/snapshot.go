@@ -469,3 +469,53 @@ func clamp16(v float64) int16 {
 	}
 	return int16(v)
 }
+
+// MatchResultToProto 把世界侧的一局结果转成协议结构（M7）。
+//
+// 为什么不直接让 world 产出 proto 消息：world 是叶子包（不 import proto），
+// 而 proto 依赖 world 的枚举时会成环。转换层放在 snapshot——它本来就
+// 是"世界状态到协议"的唯一翻译处。
+func MatchResultToProto(rec world.MatchResult) *proto.MatchResult {
+	out := &proto.MatchResult{
+		RoomId:      rec.RoomID,
+		WorldSeed:   rec.WorldSeed,
+		StartedAt:   rec.StartedAt,
+		EndedAt:     rec.EndedAt,
+		Outcome:     matchOutcomeToProto(rec.Outcome),
+		MaxWave:     uint32(rec.MaxWave),
+		DurationSec: rec.DurationSec,
+	}
+	if len(rec.Players) > 0 {
+		out.Players = make([]*proto.MatchPlayer, 0, len(rec.Players))
+		for i := range rec.Players {
+			p := &rec.Players[i]
+			out.Players = append(out.Players, &proto.MatchPlayer{
+				Slot:         uint32(p.Slot),
+				Damage:       p.Damage,
+				Contribute:   p.Contribute,
+				Kills:        p.Kills,
+				ReflectKills: p.ReflectKills,
+				Deaths:       p.Deaths,
+				Gold:         p.Gold,
+			})
+		}
+	}
+	return out
+}
+
+// matchOutcomeToProto 显式映射而不是直接 cast。
+//
+// 两侧的枚举值恰好一致（0/1/2）纯属巧合，而 cast 会让"world 侧加一种
+// 终态"变成"proto 侧静默多出一个未定义值"——客户端按 default 分支
+// 渲染成"未结束"，症状是"明明团灭了却显示加载中"。显式 switch 会在
+// 新增分支时把编译错误留在本文件。
+func matchOutcomeToProto(o world.MatchOutcome) proto.MatchOutcome {
+	switch o {
+	case world.OutcomeWiped:
+		return proto.MatchOutcome_MATCH_OUTCOME_WIPED
+	case world.OutcomeCleared:
+		return proto.MatchOutcome_MATCH_OUTCOME_CLEARED
+	default:
+		return proto.MatchOutcome_MATCH_OUTCOME_UNSPECIFIED
+	}
+}

@@ -16,6 +16,7 @@ import (
 	"koukoukongjian/internal/game/systems"
 	"koukoukongjian/internal/game/world"
 	"koukoukongjian/internal/proto"
+	"koukoukongjian/internal/snapshot"
 )
 
 // Room 是一局游戏。
@@ -474,16 +475,44 @@ func (r *Room) updateOutcome() {
 	if r.outcome != world.OutcomeUnknown {
 		return // 已进终态，不再刷日志
 	}
-	switch got := systems.CheckOutcome(r.World); got {
-	case world.OutcomeUnknown:
+	got := systems.CheckOutcome(r.World)
+	if got == world.OutcomeUnknown {
 		return
-	case world.OutcomeCleared:
-		r.outcome = got
-		r.log.Info("本局通关", "tick", r.World.Tick, "max_wave", r.World.SnapshotMatch("", got, 0, 0).MaxWave)
-	case world.OutcomeWiped:
-		r.outcome = got
-		r.log.Info("本局团灭", "tick", r.World.Tick)
 	}
+	r.outcome = got
+	rec := r.World.SnapshotMatch(r.ID, got, r.startedAt, time.Now().Unix())
+	r.log.Info("本局结束",
+		"tick", r.World.Tick,
+		"outcome", got.String(),
+		"max_wave", rec.MaxWave,
+		"players", len(rec.Players),
+	)
+	// 下发一次结算（可靠通道）。只发一次而不是每帧带：结果消息不是
+	// 状态同步的一部分（客户端拿到就不再看），而每帧带要额外占快照
+	// 的字段号（Snapshot 的 1-10 已满）并让不可靠通道承担"必达"语义。
+	//
+	// 只发给当前在座的玩家：结局那一刻已经离开的人，其战报随
+	// shutdown 的落盘走（§11.1 的 player_result 表），不需要协议同步。
+	r.broadcastMatchResult(rec)
+}
+
+// broadcastMatchResult 把结算消息投给每个在座玩家（M7）。
+//
+// 座位号在这里替换：world 层只能填池索引，而 §11.1 的 player_result.slot
+// 要的是 0..MaxSlots-1 的座位号——座位号在 peers 里，只有 room 知道。
+// updateOutcome 里做的替换与这里同源（都在 tick goroutine 里），
+// 但这里要再算一份 proto：落盘那份是 MatchResult，下发那份是
+// *proto.MatchResult，两者不共享内存。
+func (r *Room) broadcastMatchResult(rec world.MatchResult) {
+	for i := range rec.Players {
+		if p := r.peerByID(rec.Players[i].Player); p != nil {
+			rec.Players[i].Slot = p.slot
+		}
+	}
+	env := &proto.Envelope{Body: &proto.Envelope_MatchResult{MatchResult: snapshot.MatchResultToProto(rec)}}
+	r.peers.each(func(p *peer) {
+		r.sendReliable(p.slot, env)
+	})
 }
 
 // reportMatch 把本局结果发给 sink（关房时调用一次）。

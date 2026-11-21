@@ -151,6 +151,57 @@ func (GameEventKind) EnumDescriptor() ([]byte, []int) {
 	return file_internal_proto_game_proto_rawDescGZIP(), []int{1}
 }
 
+// MatchOutcome 是本局终态。三值而不是 bool：房间可能既没团灭也没通关
+// （进程被 kill、玩家全部离开），那必须能表达成 UNSPECIFIED。
+type MatchOutcome int32
+
+const (
+	MatchOutcome_MATCH_OUTCOME_UNSPECIFIED MatchOutcome = 0
+	MatchOutcome_MATCH_OUTCOME_WIPED       MatchOutcome = 1 // 团灭：全队变鬼魂（spec L52）
+	MatchOutcome_MATCH_OUTCOME_CLEARED     MatchOutcome = 2 // 通关：全部据点清完且 Boss 被击败
+)
+
+// Enum value maps for MatchOutcome.
+var (
+	MatchOutcome_name = map[int32]string{
+		0: "MATCH_OUTCOME_UNSPECIFIED",
+		1: "MATCH_OUTCOME_WIPED",
+		2: "MATCH_OUTCOME_CLEARED",
+	}
+	MatchOutcome_value = map[string]int32{
+		"MATCH_OUTCOME_UNSPECIFIED": 0,
+		"MATCH_OUTCOME_WIPED":       1,
+		"MATCH_OUTCOME_CLEARED":     2,
+	}
+)
+
+func (x MatchOutcome) Enum() *MatchOutcome {
+	p := new(MatchOutcome)
+	*p = x
+	return p
+}
+
+func (x MatchOutcome) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (MatchOutcome) Descriptor() protoreflect.EnumDescriptor {
+	return file_internal_proto_game_proto_enumTypes[2].Descriptor()
+}
+
+func (MatchOutcome) Type() protoreflect.EnumType {
+	return &file_internal_proto_game_proto_enumTypes[2]
+}
+
+func (x MatchOutcome) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use MatchOutcome.Descriptor instead.
+func (MatchOutcome) EnumDescriptor() ([]byte, []int) {
+	return file_internal_proto_game_proto_rawDescGZIP(), []int{2}
+}
+
 // Hello 是客户端连接后的第一条消息（可靠通道）。
 type Hello struct {
 	state           protoimpl.MessageState `protogen:"open.v1"`
@@ -1669,6 +1720,202 @@ func (x *GameEvent) GetElement() uint32 {
 	return 0
 }
 
+// MatchPlayer 是一名玩家在一局里的战绩。
+// 字段名与 server-design §11.1 的 player_result 表一致——前端不必自己
+// 发明名字，也便于日后对着数据库列核对。
+type MatchPlayer struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Slot          uint32                 `protobuf:"varint,1,opt,name=slot,proto3" json:"slot,omitempty"`
+	Damage        float64                `protobuf:"fixed64,2,opt,name=damage,proto3" json:"damage,omitempty"`
+	Contribute    float64                `protobuf:"fixed64,3,opt,name=contribute,proto3" json:"contribute,omitempty"`
+	Kills         uint32                 `protobuf:"varint,4,opt,name=kills,proto3" json:"kills,omitempty"`
+	ReflectKills  uint32                 `protobuf:"varint,5,opt,name=reflect_kills,json=reflectKills,proto3" json:"reflect_kills,omitempty"`
+	Deaths        uint32                 `protobuf:"varint,6,opt,name=deaths,proto3" json:"deaths,omitempty"`
+	Gold          uint32                 `protobuf:"varint,7,opt,name=gold,proto3" json:"gold,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *MatchPlayer) Reset() {
+	*x = MatchPlayer{}
+	mi := &file_internal_proto_game_proto_msgTypes[21]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *MatchPlayer) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*MatchPlayer) ProtoMessage() {}
+
+func (x *MatchPlayer) ProtoReflect() protoreflect.Message {
+	mi := &file_internal_proto_game_proto_msgTypes[21]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use MatchPlayer.ProtoReflect.Descriptor instead.
+func (*MatchPlayer) Descriptor() ([]byte, []int) {
+	return file_internal_proto_game_proto_rawDescGZIP(), []int{21}
+}
+
+func (x *MatchPlayer) GetSlot() uint32 {
+	if x != nil {
+		return x.Slot
+	}
+	return 0
+}
+
+func (x *MatchPlayer) GetDamage() float64 {
+	if x != nil {
+		return x.Damage
+	}
+	return 0
+}
+
+func (x *MatchPlayer) GetContribute() float64 {
+	if x != nil {
+		return x.Contribute
+	}
+	return 0
+}
+
+func (x *MatchPlayer) GetKills() uint32 {
+	if x != nil {
+		return x.Kills
+	}
+	return 0
+}
+
+func (x *MatchPlayer) GetReflectKills() uint32 {
+	if x != nil {
+		return x.ReflectKills
+	}
+	return 0
+}
+
+func (x *MatchPlayer) GetDeaths() uint32 {
+	if x != nil {
+		return x.Deaths
+	}
+	return 0
+}
+
+func (x *MatchPlayer) GetGold() uint32 {
+	if x != nil {
+		return x.Gold
+	}
+	return 0
+}
+
+// MatchResult 是一局的结果。
+type MatchResult struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	RoomId        string                 `protobuf:"bytes,1,opt,name=room_id,json=roomId,proto3" json:"room_id,omitempty"`
+	WorldSeed     int64                  `protobuf:"varint,2,opt,name=world_seed,json=worldSeed,proto3" json:"world_seed,omitempty"`
+	StartedAt     int64                  `protobuf:"varint,3,opt,name=started_at,json=startedAt,proto3" json:"started_at,omitempty"` // Unix 秒
+	EndedAt       int64                  `protobuf:"varint,4,opt,name=ended_at,json=endedAt,proto3" json:"ended_at,omitempty"`
+	Outcome       MatchOutcome           `protobuf:"varint,5,opt,name=outcome,proto3,enum=proto.MatchOutcome" json:"outcome,omitempty"`
+	MaxWave       uint32                 `protobuf:"varint,6,opt,name=max_wave,json=maxWave,proto3" json:"max_wave,omitempty"`
+	DurationSec   int64                  `protobuf:"varint,7,opt,name=duration_sec,json=durationSec,proto3" json:"duration_sec,omitempty"`
+	Players       []*MatchPlayer         `protobuf:"bytes,8,rep,name=players,proto3" json:"players,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *MatchResult) Reset() {
+	*x = MatchResult{}
+	mi := &file_internal_proto_game_proto_msgTypes[22]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *MatchResult) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*MatchResult) ProtoMessage() {}
+
+func (x *MatchResult) ProtoReflect() protoreflect.Message {
+	mi := &file_internal_proto_game_proto_msgTypes[22]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use MatchResult.ProtoReflect.Descriptor instead.
+func (*MatchResult) Descriptor() ([]byte, []int) {
+	return file_internal_proto_game_proto_rawDescGZIP(), []int{22}
+}
+
+func (x *MatchResult) GetRoomId() string {
+	if x != nil {
+		return x.RoomId
+	}
+	return ""
+}
+
+func (x *MatchResult) GetWorldSeed() int64 {
+	if x != nil {
+		return x.WorldSeed
+	}
+	return 0
+}
+
+func (x *MatchResult) GetStartedAt() int64 {
+	if x != nil {
+		return x.StartedAt
+	}
+	return 0
+}
+
+func (x *MatchResult) GetEndedAt() int64 {
+	if x != nil {
+		return x.EndedAt
+	}
+	return 0
+}
+
+func (x *MatchResult) GetOutcome() MatchOutcome {
+	if x != nil {
+		return x.Outcome
+	}
+	return MatchOutcome_MATCH_OUTCOME_UNSPECIFIED
+}
+
+func (x *MatchResult) GetMaxWave() uint32 {
+	if x != nil {
+		return x.MaxWave
+	}
+	return 0
+}
+
+func (x *MatchResult) GetDurationSec() int64 {
+	if x != nil {
+		return x.DurationSec
+	}
+	return 0
+}
+
+func (x *MatchResult) GetPlayers() []*MatchPlayer {
+	if x != nil {
+		return x.Players
+	}
+	return nil
+}
+
 // Ping 每 500ms 一次，用于 RTT 采样。
 type Ping struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -1679,7 +1926,7 @@ type Ping struct {
 
 func (x *Ping) Reset() {
 	*x = Ping{}
-	mi := &file_internal_proto_game_proto_msgTypes[21]
+	mi := &file_internal_proto_game_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1691,7 +1938,7 @@ func (x *Ping) String() string {
 func (*Ping) ProtoMessage() {}
 
 func (x *Ping) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_proto_game_proto_msgTypes[21]
+	mi := &file_internal_proto_game_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1704,7 +1951,7 @@ func (x *Ping) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Ping.ProtoReflect.Descriptor instead.
 func (*Ping) Descriptor() ([]byte, []int) {
-	return file_internal_proto_game_proto_rawDescGZIP(), []int{21}
+	return file_internal_proto_game_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *Ping) GetClientTimeNs() uint64 {
@@ -1724,7 +1971,7 @@ type Pong struct {
 
 func (x *Pong) Reset() {
 	*x = Pong{}
-	mi := &file_internal_proto_game_proto_msgTypes[22]
+	mi := &file_internal_proto_game_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1736,7 +1983,7 @@ func (x *Pong) String() string {
 func (*Pong) ProtoMessage() {}
 
 func (x *Pong) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_proto_game_proto_msgTypes[22]
+	mi := &file_internal_proto_game_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1749,7 +1996,7 @@ func (x *Pong) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Pong.ProtoReflect.Descriptor instead.
 func (*Pong) Descriptor() ([]byte, []int) {
-	return file_internal_proto_game_proto_rawDescGZIP(), []int{22}
+	return file_internal_proto_game_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *Pong) GetClientTimeNs() uint64 {
@@ -1776,7 +2023,7 @@ type ReqFullSnapshot struct {
 
 func (x *ReqFullSnapshot) Reset() {
 	*x = ReqFullSnapshot{}
-	mi := &file_internal_proto_game_proto_msgTypes[23]
+	mi := &file_internal_proto_game_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1788,7 +2035,7 @@ func (x *ReqFullSnapshot) String() string {
 func (*ReqFullSnapshot) ProtoMessage() {}
 
 func (x *ReqFullSnapshot) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_proto_game_proto_msgTypes[23]
+	mi := &file_internal_proto_game_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1801,7 +2048,7 @@ func (x *ReqFullSnapshot) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReqFullSnapshot.ProtoReflect.Descriptor instead.
 func (*ReqFullSnapshot) Descriptor() ([]byte, []int) {
-	return file_internal_proto_game_proto_rawDescGZIP(), []int{23}
+	return file_internal_proto_game_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *ReqFullSnapshot) GetLastSeenTick() uint32 {
@@ -1842,6 +2089,7 @@ type Envelope struct {
 	//	*Envelope_Inventory
 	//	*Envelope_ShopRack
 	//	*Envelope_ShopBuy
+	//	*Envelope_MatchResult
 	Body          isEnvelope_Body `protobuf_oneof:"body"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -1849,7 +2097,7 @@ type Envelope struct {
 
 func (x *Envelope) Reset() {
 	*x = Envelope{}
-	mi := &file_internal_proto_game_proto_msgTypes[24]
+	mi := &file_internal_proto_game_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1861,7 +2109,7 @@ func (x *Envelope) String() string {
 func (*Envelope) ProtoMessage() {}
 
 func (x *Envelope) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_proto_game_proto_msgTypes[24]
+	mi := &file_internal_proto_game_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1874,7 +2122,7 @@ func (x *Envelope) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Envelope.ProtoReflect.Descriptor instead.
 func (*Envelope) Descriptor() ([]byte, []int) {
-	return file_internal_proto_game_proto_rawDescGZIP(), []int{24}
+	return file_internal_proto_game_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *Envelope) GetBody() isEnvelope_Body {
@@ -2037,6 +2285,15 @@ func (x *Envelope) GetShopBuy() *ShopBuy {
 	return nil
 }
 
+func (x *Envelope) GetMatchResult() *MatchResult {
+	if x != nil {
+		if x, ok := x.Body.(*Envelope_MatchResult); ok {
+			return x.MatchResult
+		}
+	}
+	return nil
+}
+
 type isEnvelope_Body interface {
 	isEnvelope_Body()
 }
@@ -2112,6 +2369,11 @@ type Envelope_ShopBuy struct {
 	ShopBuy *ShopBuy `protobuf:"bytes,17,opt,name=shop_buy,json=shopBuy,proto3,oneof"`
 }
 
+type Envelope_MatchResult struct {
+	// M7 结算。18 是终局结果（S→C）。
+	MatchResult *MatchResult `protobuf:"bytes,18,opt,name=match_result,json=matchResult,proto3,oneof"`
+}
+
 func (*Envelope_Hello) isEnvelope_Body() {}
 
 func (*Envelope_HelloAck) isEnvelope_Body() {}
@@ -2145,6 +2407,8 @@ func (*Envelope_Inventory) isEnvelope_Body() {}
 func (*Envelope_ShopRack) isEnvelope_Body() {}
 
 func (*Envelope_ShopBuy) isEnvelope_Body() {}
+
+func (*Envelope_MatchResult) isEnvelope_Body() {}
 
 var File_internal_proto_game_proto protoreflect.FileDescriptor
 
@@ -2271,14 +2535,35 @@ const file_internal_proto_game_proto_rawDesc = "" +
 	"\x01a\x18\x02 \x01(\rR\x01a\x12\f\n" +
 	"\x01b\x18\x03 \x01(\rR\x01b\x12\x14\n" +
 	"\x05value\x18\x04 \x01(\x05R\x05value\x12\x18\n" +
-	"\aelement\x18\x05 \x01(\rR\aelement\",\n" +
+	"\aelement\x18\x05 \x01(\rR\aelement\"\xc0\x01\n" +
+	"\vMatchPlayer\x12\x12\n" +
+	"\x04slot\x18\x01 \x01(\rR\x04slot\x12\x16\n" +
+	"\x06damage\x18\x02 \x01(\x01R\x06damage\x12\x1e\n" +
+	"\n" +
+	"contribute\x18\x03 \x01(\x01R\n" +
+	"contribute\x12\x14\n" +
+	"\x05kills\x18\x04 \x01(\rR\x05kills\x12#\n" +
+	"\rreflect_kills\x18\x05 \x01(\rR\freflectKills\x12\x16\n" +
+	"\x06deaths\x18\x06 \x01(\rR\x06deaths\x12\x12\n" +
+	"\x04gold\x18\a \x01(\rR\x04gold\"\x9a\x02\n" +
+	"\vMatchResult\x12\x17\n" +
+	"\aroom_id\x18\x01 \x01(\tR\x06roomId\x12\x1d\n" +
+	"\n" +
+	"world_seed\x18\x02 \x01(\x03R\tworldSeed\x12\x1d\n" +
+	"\n" +
+	"started_at\x18\x03 \x01(\x03R\tstartedAt\x12\x19\n" +
+	"\bended_at\x18\x04 \x01(\x03R\aendedAt\x12-\n" +
+	"\aoutcome\x18\x05 \x01(\x0e2\x13.proto.MatchOutcomeR\aoutcome\x12\x19\n" +
+	"\bmax_wave\x18\x06 \x01(\rR\amaxWave\x12!\n" +
+	"\fduration_sec\x18\a \x01(\x03R\vdurationSec\x12,\n" +
+	"\aplayers\x18\b \x03(\v2\x12.proto.MatchPlayerR\aplayers\",\n" +
 	"\x04Ping\x12$\n" +
 	"\x0eclient_time_ns\x18\x01 \x01(\x04R\fclientTimeNs\"R\n" +
 	"\x04Pong\x12$\n" +
 	"\x0eclient_time_ns\x18\x01 \x01(\x04R\fclientTimeNs\x12$\n" +
 	"\x0eserver_time_ns\x18\x02 \x01(\x04R\fserverTimeNs\"7\n" +
 	"\x0fReqFullSnapshot\x12$\n" +
-	"\x0elast_seen_tick\x18\x01 \x01(\rR\flastSeenTick\"\xc8\x06\n" +
+	"\x0elast_seen_tick\x18\x01 \x01(\rR\flastSeenTick\"\x81\a\n" +
 	"\bEnvelope\x12$\n" +
 	"\x05hello\x18\x01 \x01(\v2\f.proto.HelloH\x00R\x05hello\x12.\n" +
 	"\thello_ack\x18\x02 \x01(\v2\x0f.proto.HelloAckH\x00R\bhelloAck\x12.\n" +
@@ -2298,7 +2583,8 @@ const file_internal_proto_game_proto_rawDesc = "" +
 	"\binteract\x18\x0e \x01(\v2\x0f.proto.InteractH\x00R\binteract\x120\n" +
 	"\tinventory\x18\x0f \x01(\v2\x10.proto.InventoryH\x00R\tinventory\x12.\n" +
 	"\tshop_rack\x18\x10 \x01(\v2\x0f.proto.ShopRackH\x00R\bshopRack\x12+\n" +
-	"\bshop_buy\x18\x11 \x01(\v2\x0e.proto.ShopBuyH\x00R\ashopBuyB\x06\n" +
+	"\bshop_buy\x18\x11 \x01(\v2\x0e.proto.ShopBuyH\x00R\ashopBuy\x127\n" +
+	"\fmatch_result\x18\x12 \x01(\v2\x12.proto.MatchResultH\x00R\vmatchResultB\x06\n" +
 	"\x04body*\x8a\x01\n" +
 	"\n" +
 	"EntityKind\x12\x1b\n" +
@@ -2315,7 +2601,11 @@ const file_internal_proto_game_proto_rawDesc = "" +
 	"\x18GAME_EVENT_KIND_LEVEL_UP\x10\x04\x12\x19\n" +
 	"\x15GAME_EVENT_KIND_DEATH\x10\x05\x12\x1a\n" +
 	"\x16GAME_EVENT_KIND_REVIVE\x10\x06\x12\x18\n" +
-	"\x14GAME_EVENT_KIND_WIPE\x10\aB0Z#koukoukongjian/internal/proto;proto\xaa\x02\bKK.Protob\x06proto3"
+	"\x14GAME_EVENT_KIND_WIPE\x10\a*a\n" +
+	"\fMatchOutcome\x12\x1d\n" +
+	"\x19MATCH_OUTCOME_UNSPECIFIED\x10\x00\x12\x17\n" +
+	"\x13MATCH_OUTCOME_WIPED\x10\x01\x12\x19\n" +
+	"\x15MATCH_OUTCOME_CLEARED\x10\x02B0Z#koukoukongjian/internal/proto;proto\xaa\x02\bKK.Protob\x06proto3"
 
 var (
 	file_internal_proto_game_proto_rawDescOnce sync.Once
@@ -2329,74 +2619,80 @@ func file_internal_proto_game_proto_rawDescGZIP() []byte {
 	return file_internal_proto_game_proto_rawDescData
 }
 
-var file_internal_proto_game_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_internal_proto_game_proto_msgTypes = make([]protoimpl.MessageInfo, 25)
+var file_internal_proto_game_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
+var file_internal_proto_game_proto_msgTypes = make([]protoimpl.MessageInfo, 27)
 var file_internal_proto_game_proto_goTypes = []any{
 	(EntityKind)(0),         // 0: proto.EntityKind
 	(GameEventKind)(0),      // 1: proto.GameEventKind
-	(*Hello)(nil),           // 2: proto.Hello
-	(*HelloAck)(nil),        // 3: proto.HelloAck
-	(*JoinRoom)(nil),        // 4: proto.JoinRoom
-	(*JoinOk)(nil),          // 5: proto.JoinOk
-	(*PlayerJoined)(nil),    // 6: proto.PlayerJoined
-	(*PlayerLeft)(nil),      // 7: proto.PlayerLeft
-	(*Input)(nil),           // 8: proto.Input
-	(*InputFrame)(nil),      // 9: proto.InputFrame
-	(*Vec2Q)(nil),           // 10: proto.Vec2Q
-	(*PlayerSelf)(nil),      // 11: proto.PlayerSelf
-	(*SkillChoice)(nil),     // 12: proto.SkillChoice
-	(*SkillChoices)(nil),    // 13: proto.SkillChoices
-	(*ChooseSkill)(nil),     // 14: proto.ChooseSkill
-	(*Interact)(nil),        // 15: proto.Interact
-	(*Inventory)(nil),       // 16: proto.Inventory
-	(*ShopItem)(nil),        // 17: proto.ShopItem
-	(*ShopRack)(nil),        // 18: proto.ShopRack
-	(*ShopBuy)(nil),         // 19: proto.ShopBuy
-	(*Snapshot)(nil),        // 20: proto.Snapshot
-	(*EntityDelta)(nil),     // 21: proto.EntityDelta
-	(*GameEvent)(nil),       // 22: proto.GameEvent
-	(*Ping)(nil),            // 23: proto.Ping
-	(*Pong)(nil),            // 24: proto.Pong
-	(*ReqFullSnapshot)(nil), // 25: proto.ReqFullSnapshot
-	(*Envelope)(nil),        // 26: proto.Envelope
+	(MatchOutcome)(0),       // 2: proto.MatchOutcome
+	(*Hello)(nil),           // 3: proto.Hello
+	(*HelloAck)(nil),        // 4: proto.HelloAck
+	(*JoinRoom)(nil),        // 5: proto.JoinRoom
+	(*JoinOk)(nil),          // 6: proto.JoinOk
+	(*PlayerJoined)(nil),    // 7: proto.PlayerJoined
+	(*PlayerLeft)(nil),      // 8: proto.PlayerLeft
+	(*Input)(nil),           // 9: proto.Input
+	(*InputFrame)(nil),      // 10: proto.InputFrame
+	(*Vec2Q)(nil),           // 11: proto.Vec2Q
+	(*PlayerSelf)(nil),      // 12: proto.PlayerSelf
+	(*SkillChoice)(nil),     // 13: proto.SkillChoice
+	(*SkillChoices)(nil),    // 14: proto.SkillChoices
+	(*ChooseSkill)(nil),     // 15: proto.ChooseSkill
+	(*Interact)(nil),        // 16: proto.Interact
+	(*Inventory)(nil),       // 17: proto.Inventory
+	(*ShopItem)(nil),        // 18: proto.ShopItem
+	(*ShopRack)(nil),        // 19: proto.ShopRack
+	(*ShopBuy)(nil),         // 20: proto.ShopBuy
+	(*Snapshot)(nil),        // 21: proto.Snapshot
+	(*EntityDelta)(nil),     // 22: proto.EntityDelta
+	(*GameEvent)(nil),       // 23: proto.GameEvent
+	(*MatchPlayer)(nil),     // 24: proto.MatchPlayer
+	(*MatchResult)(nil),     // 25: proto.MatchResult
+	(*Ping)(nil),            // 26: proto.Ping
+	(*Pong)(nil),            // 27: proto.Pong
+	(*ReqFullSnapshot)(nil), // 28: proto.ReqFullSnapshot
+	(*Envelope)(nil),        // 29: proto.Envelope
 }
 var file_internal_proto_game_proto_depIdxs = []int32{
-	9,  // 0: proto.Input.frames:type_name -> proto.InputFrame
-	10, // 1: proto.PlayerSelf.pos:type_name -> proto.Vec2Q
-	10, // 2: proto.PlayerSelf.vel:type_name -> proto.Vec2Q
-	12, // 3: proto.SkillChoices.choices:type_name -> proto.SkillChoice
-	17, // 4: proto.ShopRack.items:type_name -> proto.ShopItem
-	11, // 5: proto.Snapshot.self:type_name -> proto.PlayerSelf
-	21, // 6: proto.Snapshot.adds:type_name -> proto.EntityDelta
-	21, // 7: proto.Snapshot.updates:type_name -> proto.EntityDelta
-	22, // 8: proto.Snapshot.events:type_name -> proto.GameEvent
+	10, // 0: proto.Input.frames:type_name -> proto.InputFrame
+	11, // 1: proto.PlayerSelf.pos:type_name -> proto.Vec2Q
+	11, // 2: proto.PlayerSelf.vel:type_name -> proto.Vec2Q
+	13, // 3: proto.SkillChoices.choices:type_name -> proto.SkillChoice
+	18, // 4: proto.ShopRack.items:type_name -> proto.ShopItem
+	12, // 5: proto.Snapshot.self:type_name -> proto.PlayerSelf
+	22, // 6: proto.Snapshot.adds:type_name -> proto.EntityDelta
+	22, // 7: proto.Snapshot.updates:type_name -> proto.EntityDelta
+	23, // 8: proto.Snapshot.events:type_name -> proto.GameEvent
 	0,  // 9: proto.Snapshot.removes_kind:type_name -> proto.EntityKind
 	0,  // 10: proto.EntityDelta.kind:type_name -> proto.EntityKind
-	10, // 11: proto.EntityDelta.pos:type_name -> proto.Vec2Q
-	10, // 12: proto.EntityDelta.vel:type_name -> proto.Vec2Q
+	11, // 11: proto.EntityDelta.pos:type_name -> proto.Vec2Q
+	11, // 12: proto.EntityDelta.vel:type_name -> proto.Vec2Q
 	1,  // 13: proto.GameEvent.kind:type_name -> proto.GameEventKind
-	2,  // 14: proto.Envelope.hello:type_name -> proto.Hello
-	3,  // 15: proto.Envelope.hello_ack:type_name -> proto.HelloAck
-	4,  // 16: proto.Envelope.join_room:type_name -> proto.JoinRoom
-	5,  // 17: proto.Envelope.join_ok:type_name -> proto.JoinOk
-	6,  // 18: proto.Envelope.player_joined:type_name -> proto.PlayerJoined
-	7,  // 19: proto.Envelope.player_left:type_name -> proto.PlayerLeft
-	8,  // 20: proto.Envelope.input:type_name -> proto.Input
-	20, // 21: proto.Envelope.snapshot:type_name -> proto.Snapshot
-	23, // 22: proto.Envelope.ping:type_name -> proto.Ping
-	24, // 23: proto.Envelope.pong:type_name -> proto.Pong
-	25, // 24: proto.Envelope.req_full_snapshot:type_name -> proto.ReqFullSnapshot
-	13, // 25: proto.Envelope.skill_choices:type_name -> proto.SkillChoices
-	14, // 26: proto.Envelope.choose_skill:type_name -> proto.ChooseSkill
-	15, // 27: proto.Envelope.interact:type_name -> proto.Interact
-	16, // 28: proto.Envelope.inventory:type_name -> proto.Inventory
-	18, // 29: proto.Envelope.shop_rack:type_name -> proto.ShopRack
-	19, // 30: proto.Envelope.shop_buy:type_name -> proto.ShopBuy
-	31, // [31:31] is the sub-list for method output_type
-	31, // [31:31] is the sub-list for method input_type
-	31, // [31:31] is the sub-list for extension type_name
-	31, // [31:31] is the sub-list for extension extendee
-	0,  // [0:31] is the sub-list for field type_name
+	2,  // 14: proto.MatchResult.outcome:type_name -> proto.MatchOutcome
+	24, // 15: proto.MatchResult.players:type_name -> proto.MatchPlayer
+	3,  // 16: proto.Envelope.hello:type_name -> proto.Hello
+	4,  // 17: proto.Envelope.hello_ack:type_name -> proto.HelloAck
+	5,  // 18: proto.Envelope.join_room:type_name -> proto.JoinRoom
+	6,  // 19: proto.Envelope.join_ok:type_name -> proto.JoinOk
+	7,  // 20: proto.Envelope.player_joined:type_name -> proto.PlayerJoined
+	8,  // 21: proto.Envelope.player_left:type_name -> proto.PlayerLeft
+	9,  // 22: proto.Envelope.input:type_name -> proto.Input
+	21, // 23: proto.Envelope.snapshot:type_name -> proto.Snapshot
+	26, // 24: proto.Envelope.ping:type_name -> proto.Ping
+	27, // 25: proto.Envelope.pong:type_name -> proto.Pong
+	28, // 26: proto.Envelope.req_full_snapshot:type_name -> proto.ReqFullSnapshot
+	14, // 27: proto.Envelope.skill_choices:type_name -> proto.SkillChoices
+	15, // 28: proto.Envelope.choose_skill:type_name -> proto.ChooseSkill
+	16, // 29: proto.Envelope.interact:type_name -> proto.Interact
+	17, // 30: proto.Envelope.inventory:type_name -> proto.Inventory
+	19, // 31: proto.Envelope.shop_rack:type_name -> proto.ShopRack
+	20, // 32: proto.Envelope.shop_buy:type_name -> proto.ShopBuy
+	25, // 33: proto.Envelope.match_result:type_name -> proto.MatchResult
+	34, // [34:34] is the sub-list for method output_type
+	34, // [34:34] is the sub-list for method input_type
+	34, // [34:34] is the sub-list for extension type_name
+	34, // [34:34] is the sub-list for extension extendee
+	0,  // [0:34] is the sub-list for field type_name
 }
 
 func init() { file_internal_proto_game_proto_init() }
@@ -2404,7 +2700,7 @@ func file_internal_proto_game_proto_init() {
 	if File_internal_proto_game_proto != nil {
 		return
 	}
-	file_internal_proto_game_proto_msgTypes[24].OneofWrappers = []any{
+	file_internal_proto_game_proto_msgTypes[26].OneofWrappers = []any{
 		(*Envelope_Hello)(nil),
 		(*Envelope_HelloAck)(nil),
 		(*Envelope_JoinRoom)(nil),
@@ -2422,14 +2718,15 @@ func file_internal_proto_game_proto_init() {
 		(*Envelope_Inventory)(nil),
 		(*Envelope_ShopRack)(nil),
 		(*Envelope_ShopBuy)(nil),
+		(*Envelope_MatchResult)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_internal_proto_game_proto_rawDesc), len(file_internal_proto_game_proto_rawDesc)),
-			NumEnums:      2,
-			NumMessages:   25,
+			NumEnums:      3,
+			NumMessages:   27,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

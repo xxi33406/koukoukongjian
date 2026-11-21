@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"koukoukongjian/internal/game/world"
+	"koukoukongjian/internal/proto"
 )
 
 // memSink 是测试用的内存 sink，记录房间上报了什么。
@@ -171,4 +172,45 @@ func TestResultSinkNilIsSafe(t *testing.T) {
 	cancel() // ctx 取消走 shutdown 分支，此时 sink 为 nil
 	time.Sleep(100 * time.Millisecond)
 	// 无 panic 即通过。
+}
+
+// TestRoomBroadcastsMatchResult 钉住结局那一刻通过可靠通道下发一次结算。
+//
+// 为什么走可靠通道而不是快照：Snapshot 的字段号 1-10 已满，而结算消息
+// 不是状态同步的一部分（客户端拿到一次就够），塞进每帧等于让不可靠通道
+// 承担"必达"语义。
+//
+// 走真实死亡路径而不是 setup 里手摆鬼魂：手摆的那个玩家在 joinPlayer
+// 之前就存在，而 join 会 spawn 一个活人，于是"全队鬼魂"永不成立。
+// 摆一只一击必杀的怪在出生点，玩家被打死后就是唯一的（鬼魂）玩家。
+func TestRoomBroadcastsMatchResult(t *testing.T) {
+	sink := &memSink{}
+	r, cancel := startRoomWith(t, "outcome-cast", func(r *Room) {
+		r.SetResultSink(sink)
+		// 攻击力拉到一击必杀：默认 10 点打 100 血要十次，测试会慢十秒。
+		r.World.Mon.AttackDamage = 500
+		spawnTarget(r, r.World.Hubs[r.World.SpawnHub].Center, 100000)
+	})
+	defer cancel()
+
+	_, snapSink := joinPlayer(t, r, "victim")
+	env := waitReliable(t, r, snapSink, 25*time.Second, "结算下发", func(e *proto.Envelope) bool {
+		return e.GetMatchResult() != nil
+	})
+	mr := env.GetMatchResult()
+	if mr.Outcome != proto.MatchOutcome_MATCH_OUTCOME_WIPED {
+		t.Fatalf("下发 Outcome = %v，期望 WIPED", mr.Outcome)
+	}
+	if mr.RoomId != "outcome-cast" {
+		t.Fatalf("下发 RoomId = %q，期望 outcome-cast", mr.RoomId)
+	}
+	if len(mr.Players) != 1 {
+		t.Fatalf("下发玩家行数 = %d，期望 1", len(mr.Players))
+	}
+	if got := mr.Players[0].Slot; got != 0 {
+		t.Fatalf("下发座位 = %d，期望 0（座位号不是池索引）", got)
+	}
+	if mr.Players[0].Deaths != 1 {
+		t.Fatalf("下发 Deaths = %d，期望 1", mr.Players[0].Deaths)
+	}
 }
