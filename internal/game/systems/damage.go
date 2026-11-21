@@ -38,7 +38,7 @@ func ApplyHits(w *world.World, hits []Hit) []world.DamageEvent {
 		// 子弹只打怪物（M2 起 Collide 只遍历怪物池），所以类别固定是
 		// 怪物；EntityClassMonster 恰好是零值，写出来是为了让读者不必
 		// 去查零值代表什么。
-		ev := w.ResolveDamage(h.Src, h.Target, world.EntityClassMonster, h.Damage, h.Element, world.DamageTags{})
+		ev := w.ResolveDamage(h.Src, h.Target, world.EntityClassMonster, h.Damage, h.Element, world.DamageTags{}, h.Reflector)
 		if ev.Amount > 0 {
 			events = append(events, ev)
 		}

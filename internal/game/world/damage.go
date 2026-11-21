@@ -47,8 +47,14 @@ type DamageEvent struct {
 // 伤害落到另一个池里撞号的那个实体身上，且**没有任何报错**——怪物打玩家
 // 时玩家不掉血、怪物掉血，这个症状曾被当成"怪物 AI 没生效"排查了很久。
 // src 永远是玩家 id（怪物伤害的来源传 InvalidID），所以它不需要类别。
-func (w *World) ResolveDamage(src, dst EntityID, dstClass EntityClass, base float64, el Element, tags DamageTags) DamageEvent {
-	ev := DamageEvent{Src: src, Dst: dst, Element: el}
+// reflector 是反射弹幕的归属者（spec L114「反射弹幕的击杀归属算反弹者」），
+// 非反射伤害传 InvalidID。它单独成参而不是塞进 DamageTags：DamageTags
+// 表达的是"这次伤害的作用方式"（是否无视护甲、可否暴击），而 reflector
+// 表达的是"这次伤害是谁造成的"——与 src 同类，只是多了一层转手。塞进
+// Tags 会让"来源"这个概念在两个地方各有一半，而战绩页要按它单独一列
+// 统计（server-design §11.1 的 reflect_kills）。
+func (w *World) ResolveDamage(src, dst EntityID, dstClass EntityClass, base float64, el Element, tags DamageTags, reflector EntityID) DamageEvent {
+	ev := DamageEvent{Src: src, Dst: dst, Element: el, Reflector: reflector}
 
 	if base <= 0 {
 		return ev
@@ -77,6 +83,10 @@ func (w *World) ResolveDamage(src, dst EntityID, dstClass EntityClass, base floa
 			// 用值推断会让"打死"和"血少"撞在同一个表示上。
 			m.Flags |= MonsterFlagDead
 			ev.IsKill = true
+			// 战绩记账（M7）。放在置标志之后、creditSource 之前：
+			// 两者读的都是 srcP，一次 Get 拿到的指针就够了，但分开写
+			// 是因为 creditSource 还被别的路径调用（它只管贡献）。
+			recordKill(w, src, reflector)
 		}
 		ev.Amount = dmg
 	} else {
@@ -152,6 +162,10 @@ func (w *World) resolvePlayerDamage(ev DamageEvent, src, dst EntityID, dmg float
 	if p.HP <= 0 {
 		p.Kill()
 		ev.IsKill = true
+		// 阵亡计数（M7）。必须放在 Kill() 之后：Kill() 把 Flags 清零了，
+		// 但没有动统计字段——统计是"这一局的战绩"，不该因为死一次而
+		// 归零（见 PlayerState 里那三个字段的注释）。
+		p.Deaths++
 	}
 	ev.Amount = dmg
 
@@ -166,5 +180,33 @@ func (w *World) resolvePlayerDamage(ev DamageEvent, src, dst EntityID, dmg float
 func creditSource(w *World, src EntityID, dmg float64) {
 	if srcP := w.Players.Get(src); srcP != nil {
 		srcP.Contribute += dmg
+	}
+}
+
+// recordKill 记一次击杀（M7）。
+//
+// 记在 src 身上而不是 reflector 身上，但如果 reflector 有效则两边都记：
+// 反射弹幕的 Src 与 Reflector 是同一个玩家（reflectOff 把 OwnerID 和
+// ReflectorID 都设成区域主人），所以这时是"这个人用反射拿了一杀"；
+// 而若将来出现"Src 是队友、Reflector 是别人"的情况（弹幕被别人反射后
+// 又打死了怪），击杀归 Src 仍是对的——怪物是这颗子弹打死的，只是这颗
+// 子弹属于谁已经在反射那一刻转移了。所以两个都记不会重复计数。
+func recordKill(w *World, src, reflector EntityID) {
+	if srcP := w.Players.Get(src); srcP != nil {
+		srcP.Kills++
+	}
+	if reflector.IsValid() {
+		if rp := w.Players.Get(reflector); rp != nil {
+			// 反射归属与击杀者可能是同一人（常见情况），此时上面那次
+			// 已经加了 Kills；这里只加 ReflectKills，不重复加 Kills。
+			//
+			// 若两者不同（反射给别人后再被第三人打死），第三人拿 Kills，
+			// 反射者拿 ReflectKills——战绩页上"反射击杀"这一列问的是
+			// "你的反射面拿了几杀"，与"谁最后打死"是两个问题。
+			rp.ReflectKills++
+			if reflector != src {
+				rp.Kills++
+			}
+		}
 	}
 }

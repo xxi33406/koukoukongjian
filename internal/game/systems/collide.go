@@ -15,6 +15,15 @@ type Hit struct {
 	Src     world.EntityID // 伤害归属，取子弹的 OwnerID
 	Damage  float64
 	Element world.Element
+	// Reflector 是反射弹幕的归属者（spec L114），非反射命中为 InvalidID。
+	//
+	// 必须一路带到 ResolveDamage：子弹的 OwnerID 在反射那一刻已被改成
+	// 反射区域的主人，所以这里的 Src 拿到的就是"这发子弹现在属于谁"。
+	// 但战绩要单独统计"反射击杀"（server-design §11.1 的 reflect_kills），
+	// 而"属于谁"和"是不是靠反射拿的"是两个问题——后者只有
+	// BulletState.ReflectorID 知道。丢掉它就没法区分"自己打的"和
+	// "自己弹回去的"（M6 把它写进了快照供客户端变色，M7 起也进战绩）。
+	Reflector world.EntityID
 }
 
 // Collide 检测本子步内所有子弹与怪物的碰撞，返回候选命中列表。
@@ -55,11 +64,12 @@ func Collide(w *world.World) []Hit {
 			if found == nil || d < bestSq {
 				bestSq = d
 				found = &Hit{
-					Bullet:  bID,
-					Target:  mID,
-					Src:     b.OwnerID,
-					Damage:  b.Damage,
-					Element: b.Element,
+					Bullet:    bID,
+					Target:    mID,
+					Src:       b.OwnerID,
+					Damage:    b.Damage,
+					Element:   b.Element,
+					Reflector: b.ReflectorID,
 				}
 			}
 			return true

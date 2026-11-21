@@ -20,7 +20,7 @@ func TestResolveDamageSubtractsHP(t *testing.T) {
 	m.HP = 50
 	m.MaxHP = 50
 
-	ev := w.ResolveDamage(InvalidID, id, EntityClassMonster, 10, ElementNone, DamageTags{})
+	ev := w.ResolveDamage(InvalidID, id, EntityClassMonster, 10, ElementNone, DamageTags{}, InvalidID)
 
 	if m.HP != 40 {
 		t.Fatalf("HP = %v，期望 40", m.HP)
@@ -40,7 +40,7 @@ func TestResolveDamageMarksKillNotRemove(t *testing.T) {
 	m.HP = 5
 	m.MaxHP = 50
 
-	ev := w.ResolveDamage(InvalidID, id, EntityClassMonster, 10, ElementNone, DamageTags{})
+	ev := w.ResolveDamage(InvalidID, id, EntityClassMonster, 10, ElementNone, DamageTags{}, InvalidID)
 
 	if !ev.IsKill {
 		t.Fatal("血量打到 0 以下却没标记击杀")
@@ -65,11 +65,11 @@ func TestResolveDamageOnHealedCorpseIsNoop(t *testing.T) {
 	mID, m := w.Monsters.Spawn()
 	m.HP = 5
 	m.MaxHP = 50
-	w.ResolveDamage(InvalidID, mID, EntityClassMonster, 10, ElementNone, DamageTags{})
+	w.ResolveDamage(InvalidID, mID, EntityClassMonster, 10, ElementNone, DamageTags{}, InvalidID)
 
 	m.HP = 30 // 模拟治疗技能把血拉回正数，标志不动
 
-	ev := w.ResolveDamage(InvalidID, mID, EntityClassMonster, 10, ElementNone, DamageTags{})
+	ev := w.ResolveDamage(InvalidID, mID, EntityClassMonster, 10, ElementNone, DamageTags{}, InvalidID)
 	if ev.Amount != 0 {
 		t.Fatalf("对已死（HP 已被治疗回正数）的目标造成了 %v 伤害", ev.Amount)
 	}
@@ -87,7 +87,7 @@ func TestResolveDamageDoesNotGoBelowZero(t *testing.T) {
 	m.HP = 3
 	m.MaxHP = 50
 
-	w.ResolveDamage(InvalidID, id, EntityClassMonster, 100, ElementNone, DamageTags{})
+	w.ResolveDamage(InvalidID, id, EntityClassMonster, 100, ElementNone, DamageTags{}, InvalidID)
 
 	if m.HP < 0 {
 		t.Fatalf("HP = %v，允许为负会让血条算出负宽度", m.HP)
@@ -103,7 +103,7 @@ func TestResolveDamageRecordsContributor(t *testing.T) {
 	m.HP = 100
 	m.MaxHP = 100
 
-	w.ResolveDamage(pID, mID, EntityClassMonster, 25, ElementNone, DamageTags{})
+	w.ResolveDamage(pID, mID, EntityClassMonster, 25, ElementNone, DamageTags{}, InvalidID)
 
 	if p.Contribute != 25 {
 		t.Fatalf("贡献 = %v，期望 25", p.Contribute)
@@ -112,7 +112,7 @@ func TestResolveDamageRecordsContributor(t *testing.T) {
 
 func TestResolveDamageOnUnknownTargetIsNoop(t *testing.T) {
 	w := newWorldForTest()
-	ev := w.ResolveDamage(InvalidID, MakeID(999, 1), EntityClassMonster, 10, ElementNone, DamageTags{})
+	ev := w.ResolveDamage(InvalidID, MakeID(999, 1), EntityClassMonster, 10, ElementNone, DamageTags{}, InvalidID)
 	if ev.Amount != 0 {
 		t.Fatalf("目标不存在却产生了 %v 伤害", ev.Amount)
 	}
@@ -127,7 +127,7 @@ func TestResolveDamageOnDeadTargetIsNoop(t *testing.T) {
 	m.Flags |= MonsterFlagDead
 	m.MaxHP = 50
 
-	ev := w.ResolveDamage(InvalidID, mID, EntityClassMonster, 10, ElementNone, DamageTags{})
+	ev := w.ResolveDamage(InvalidID, mID, EntityClassMonster, 10, ElementNone, DamageTags{}, InvalidID)
 	if ev.Amount != 0 {
 		t.Fatalf("对已死目标造成了 %v 伤害", ev.Amount)
 	}
@@ -160,7 +160,7 @@ func TestResolveDamageRoutesByIdClassNotPoolOrder(t *testing.T) {
 	}
 
 	// 怪物打玩家：复刻 ai.go 的调用形态（来源 InvalidID、目标玩家）。
-	w.ResolveDamage(InvalidID, pid, EntityClassPlayer, 10, ElementNone, DamageTags{})
+	w.ResolveDamage(InvalidID, pid, EntityClassPlayer, 10, ElementNone, DamageTags{}, InvalidID)
 
 	if p.HP != 90 {
 		t.Fatalf("玩家 HP = %v，期望 90（伤害没打到玩家）", p.HP)
@@ -170,7 +170,7 @@ func TestResolveDamageRoutesByIdClassNotPoolOrder(t *testing.T) {
 	}
 
 	// 反向：打向怪物的伤害不能跑到同号的玩家身上。
-	w.ResolveDamage(InvalidID, mid, EntityClassMonster, 10, ElementNone, DamageTags{})
+	w.ResolveDamage(InvalidID, mid, EntityClassMonster, 10, ElementNone, DamageTags{}, InvalidID)
 
 	if m.HP != 40 {
 		t.Fatalf("怪物 HP = %v，期望 40", m.HP)

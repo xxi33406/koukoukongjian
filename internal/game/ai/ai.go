@@ -170,16 +170,16 @@ func UpdateMonster(w *world.World, m *world.MonsterState, dt float64) {
 			case m.Flags.Has(world.MonsterFlagEnraged):
 				// 极端分离（spec L61）：狂暴，伤害 ×1.3，单次结算。
 				w.ResolveDamage(world.InvalidID, m.TargetID, world.EntityClassPlayer,
-					dmg*enragedDamageMul, world.ElementNone, world.DamageTags{})
+					dmg*enragedDamageMul, world.ElementNone, world.DamageTags{}, world.InvalidID)
 			case m.Flags.Has(world.MonsterFlagSplits):
 				// 轻度分离（spec L60）：两次各 60% 的攻击，分别结算。
 				// 分开调 ResolveDamage 而不是乘 1.2 一次打——玩家有机会
 				// 只吃到其中一次（走位），比「一次 120%」更有操作空间。
 				half := dmg * splitDamageMul
-				w.ResolveDamage(world.InvalidID, m.TargetID, world.EntityClassPlayer, half, world.ElementNone, world.DamageTags{})
-				w.ResolveDamage(world.InvalidID, m.TargetID, world.EntityClassPlayer, half, world.ElementNone, world.DamageTags{})
+				w.ResolveDamage(world.InvalidID, m.TargetID, world.EntityClassPlayer, half, world.ElementNone, world.DamageTags{}, world.InvalidID)
+				w.ResolveDamage(world.InvalidID, m.TargetID, world.EntityClassPlayer, half, world.ElementNone, world.DamageTags{}, world.InvalidID)
 			default:
-				w.ResolveDamage(world.InvalidID, m.TargetID, world.EntityClassPlayer, dmg, world.ElementNone, world.DamageTags{})
+				w.ResolveDamage(world.InvalidID, m.TargetID, world.EntityClassPlayer, dmg, world.ElementNone, world.DamageTags{}, world.InvalidID)
 			}
 		}
 

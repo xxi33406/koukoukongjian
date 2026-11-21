@@ -209,7 +209,7 @@ func TestOpenInventoryInterruptedByDamage(t *testing.T) {
 	// 先验证不打断的情况：无敌挡掉的伤害不算受击。
 	BeginOpenInventory(p, 100)
 	p.Flags |= world.PlayerFlagInvulnerable
-	w.ResolveDamage(world.InvalidID, id, world.EntityClassPlayer, 10, world.ElementNone, world.DamageTags{})
+	w.ResolveDamage(world.InvalidID, id, world.EntityClassPlayer, 10, world.ElementNone, world.DamageTags{}, world.InvalidID)
 	if !p.Flags.Has(world.PlayerFlagBusy) {
 		t.Errorf("被无敌挡掉的伤害打断了引导，期望不打断（没吃到的伤害不算受击）")
 	}
@@ -220,7 +220,7 @@ func TestOpenInventoryInterruptedByDamage(t *testing.T) {
 
 	// 真的吃到伤害：引导被打断。
 	hpBefore := p.HP
-	ev := w.ResolveDamage(world.InvalidID, id, world.EntityClassPlayer, 10, world.ElementNone, world.DamageTags{})
+	ev := w.ResolveDamage(world.InvalidID, id, world.EntityClassPlayer, 10, world.ElementNone, world.DamageTags{}, world.InvalidID)
 	if ev.Amount != 10 {
 		t.Fatalf("这次伤害结算了 %v，期望 10", ev.Amount)
 	}
@@ -243,7 +243,7 @@ func TestOpenInventoryInterruptedByDamage(t *testing.T) {
 	// 引导是两个独立状态，一起抹掉会让玩家在背包刚要点开时意外失去保护。
 	BeginOpenInventory(p, 200)
 	p.Flags |= world.PlayerFlagReconnecting
-	w.ResolveDamage(world.InvalidID, id, world.EntityClassPlayer, 1, world.ElementNone, world.DamageTags{})
+	w.ResolveDamage(world.InvalidID, id, world.EntityClassPlayer, 1, world.ElementNone, world.DamageTags{}, world.InvalidID)
 	if !p.Flags.Has(world.PlayerFlagReconnecting) {
 		t.Errorf("受击打断把 PlayerFlagReconnecting 也清掉了，期望只清 Busy")
 	}

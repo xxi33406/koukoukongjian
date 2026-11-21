@@ -163,7 +163,7 @@ func castBurst(w *world.World, id world.EntityID, p *world.PlayerState, s build.
 	})
 	for _, mid := range hit {
 		// 环形爆发只伤怪物（hit 里收的都是怪物池 id），类别显式写出来。
-		w.ResolveDamage(id, mid, world.EntityClassMonster, s.Amount, world.ElementNone, world.DamageTags{})
+		w.ResolveDamage(id, mid, world.EntityClassMonster, s.Amount, world.ElementNone, world.DamageTags{}, world.InvalidID)
 	}
 }
 
@@ -266,7 +266,7 @@ func castElemental(w *world.World, id world.EntityID, p *world.PlayerState, s bu
 	})
 	var events []world.DamageEvent
 	for _, mid := range hit {
-		ev := w.ResolveDamage(id, mid, world.EntityClassMonster, s.Amount, s.Element, world.DamageTags{})
+		ev := w.ResolveDamage(id, mid, world.EntityClassMonster, s.Amount, s.Element, world.DamageTags{}, world.InvalidID)
 		if ev.Amount > 0 {
 			events = append(events, ev)
 		}

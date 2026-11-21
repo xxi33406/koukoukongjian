@@ -15,7 +15,7 @@ func TestPlayerDiesBecomesGhost(t *testing.T) {
 	p.HP = 10
 	p.MaxHP = 100
 
-	ev := w.ResolveDamage(InvalidID, id, EntityClassPlayer, 50, ElementNone, DamageTags{})
+	ev := w.ResolveDamage(InvalidID, id, EntityClassPlayer, 50, ElementNone, DamageTags{}, InvalidID)
 
 	if !ev.IsKill {
 		t.Fatalf("致死伤害没有置 IsKill")
@@ -39,7 +39,7 @@ func TestGhostTakesNoDamage(t *testing.T) {
 	p.State = PlayerGhost
 	p.HP = 0
 
-	ev := w.ResolveDamage(InvalidID, id, EntityClassPlayer, 50, ElementNone, DamageTags{})
+	ev := w.ResolveDamage(InvalidID, id, EntityClassPlayer, 50, ElementNone, DamageTags{}, InvalidID)
 
 	if ev.Amount != 0 {
 		t.Fatalf("鬼魂吃到了 %v 点伤害，期望 0", ev.Amount)

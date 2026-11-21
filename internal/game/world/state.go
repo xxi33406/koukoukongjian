@@ -78,6 +78,18 @@ type PlayerState struct {
 	Flags       PlayerFlags
 	GhostTether float32 // 鬼魂拴绳半径（spec L66）
 
+	// —— 战绩（M7，随本局结果落盘）——
+	//
+	// 存在 PlayerState 而不是 room 的 map：与 Gold/Contribute 同级同生命
+	// 周期，都只在 tick goroutine 里读写。池槽位复用时 Pool.Spawn 的
+	// var zero T 会顺带清零，正是"新玩家从零开始"要的语义。
+	//
+	// 三者都**不**被 Kill() 清掉：把人打死一次就抹掉他的击杀数，会让
+	// 战绩页在阵亡玩家身上永远显示 0。
+	Kills        uint32
+	Deaths       uint32
+	ReflectKills uint32
+
 	// —— 成长（M4）——
 	//
 	// Level 从 1 起。但要注意 Pool.Spawn 会 `var zero T` 把整个槽位清零
