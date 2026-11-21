@@ -146,6 +146,38 @@ type Room struct {
 	done chan struct{}
 	// stopped 表示 Run 已返回，避免重复 Stop。
 	stopped atomic.Bool
+
+	// resultSink 接收本局结果（M7）。nil 表示不落盘。
+	//
+	// 只在 shutdown 里被调用一次（关房那一刻），所以不需要 channel 中转：
+	// shutdown 不在 tick 循环里，阻塞写盘也只会拖慢关房。
+	resultSink ResultSink
+	// startedAt 是房间创建时的墙体时钟（Unix 秒），用于算对局时长。
+	//
+	// 用墙体时钟而不是 tick 数：§11.1 的 duration_sec 是给人看的
+	// （"这局打了多久"），而 tick 数在超时丢帧时会与实际时间脱钩。
+	startedAt int64
+	// outcome 是本局终态（每 tick 由 updateOutcome 刷新，只在 tick
+	// goroutine 里写）。
+	outcome world.MatchOutcome
+	// reported 保证结果只上报一次。
+	//
+	// 用原子量：shutdown 可能从 Run 的两个分支（ctx done / stop called）
+	// 与外部 Stop 竞进，重复上报会让同一局在文件里出现两行。
+	reported atomic.Bool
+}
+
+// ResultSink 接收一局的结果（M7）。
+//
+// 为什么是接口而不是直接依赖 internal/store：Room 是游戏逻辑 + 网络入口，
+// 让它知道"JSONL 文件路径"是把它和存储介质绑死。用接口后测试可以传
+// 内存 sink 断言"关房时确实上报了"，而 cmd/server 负责把 store.Writer
+// 接上去。将来换 SQLite 不需要动 room（拍板决定 #2 与 §11.1.3）。
+//
+// 实现方**不得阻塞**（§11.1.3 硬约束第 1 条）：调用点在 shutdown 里，
+// 阻塞一次就拖住整个关房流程。
+type ResultSink interface {
+	Report(rec world.MatchResult)
 }
 
 // peerInput 是带座位号的输入。
@@ -253,6 +285,7 @@ func New(cfg *config.Config, log *slog.Logger, opts Options) *Room {
 		shopBuys:     make(chan shopBuyRequest, MaxSlots*4),
 		reliable:     make(chan ReliableMessage, MaxSlots*8),
 		done:         make(chan struct{}),
+		startedAt:    time.Now().Unix(),
 	}
 	r.World.Grid.SetBruteThreshold(cfg.Space.SpatialBruteThreshold)
 
@@ -408,6 +441,9 @@ func (r *Room) Run(ctx context.Context) {
 // 不关就会泄漏一个 goroutine。
 func (r *Room) shutdown(reason string) {
 	r.stopped.Store(true)
+	// 上报必须在清 peers 之前：reportMatch 要按实体 id 反查座位号，
+	// 而 peers.slots 在下面几行就被清空。
+	r.reportMatch()
 	r.peers.each(func(p *peer) {
 		close(p.sink)
 	})
@@ -417,6 +453,59 @@ func (r *Room) shutdown(reason string) {
 	r.peers.count = 0
 	r.peerCount.Store(0)
 	r.log.Info("房间停止", "reason", reason, "ticks", r.ticksRun.Load())
+}
+
+// SetResultSink 设置结果接收方（M7）。建议在 Run 之前调用。
+//
+// 不检查"是否已在运行"：设置一个字段本身不是并发危险，而在 Run 之后
+// 设置也只是让前几 tick 的判定看不到 sink——语义上仍安全（结局只在上报
+// 那一刻读取，而上报发生在 shutdown），所以这里只做文档约束。
+func (r *Room) SetResultSink(s ResultSink) {
+	r.resultSink = s
+}
+
+// updateOutcome 每 tick 判定一次本局终态（M7）。
+//
+// 只在"从非终态进入终态"的那一刻记日志：终态是粘性的（一旦通关/团灭
+// 就不再变），每 tick 打一条会把日志刷满。而 outcome 字段本身允许被
+// 覆写——CheckOutcome 是纯函数，它的优先级规则（团灭 > 通关）由它自己
+// 保证，这里不做二次裁决。
+func (r *Room) updateOutcome() {
+	if r.outcome != world.OutcomeUnknown {
+		return // 已进终态，不再刷日志
+	}
+	switch got := systems.CheckOutcome(r.World); got {
+	case world.OutcomeUnknown:
+		return
+	case world.OutcomeCleared:
+		r.outcome = got
+		r.log.Info("本局通关", "tick", r.World.Tick, "max_wave", r.World.SnapshotMatch("", got, 0, 0).MaxWave)
+	case world.OutcomeWiped:
+		r.outcome = got
+		r.log.Info("本局团灭", "tick", r.World.Tick)
+	}
+}
+
+// reportMatch 把本局结果发给 sink（关房时调用一次）。
+func (r *Room) reportMatch() {
+	if r.resultSink == nil || !r.reported.CompareAndSwap(false, true) {
+		return
+	}
+	rec := r.World.SnapshotMatch(r.ID, r.outcome, r.startedAt, time.Now().Unix())
+	// 座位号替换池索引：world 层只能填 id.Index()，而 §11.1 的
+	// player_result.slot 要的是 0..MaxSlots-1 的座位号——座位号在 peers
+	// 里，只有 room 知道。
+	for i := range rec.Players {
+		if p := r.peerByID(rec.Players[i].Player); p != nil {
+			rec.Players[i].Slot = p.slot
+		}
+	}
+	r.resultSink.Report(rec)
+	r.log.Info("本局结果已上报",
+		"outcome", rec.Outcome.String(),
+		"duration_sec", rec.DurationSec,
+		"players", len(rec.Players),
+	)
 }
 
 // Stop 请求停止 tick 循环。可安全重复调用。
@@ -577,6 +666,11 @@ func (r *Room) tick() {
 	// 理由见 combat-design-v0.1.md:77——发射频率以 tick 为单位，
 	// 放子步里会让一 tick 生成三倍子弹（§1.2 反例 4）。
 	r.fire()
+
+	// 3.5 终局判定（M7）。放 fire 之后：本 tick 的击杀已经结算完，
+	// 判定读到的才是最新状态。放在 broadcast 之前，让客户端从本 tick
+	// 的快照里就能看到"这一局结束了"。
+	r.updateOutcome()
 
 	// 4. 世界级结算：M2 只有事件累积（r.events 已在子步里攒好）
 	// 5. 迷雾增量：Reveal 返回内部复用切片，必须立刻拷进 r.fogDelta——

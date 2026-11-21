@@ -19,6 +19,7 @@ import (
 	"koukoukongjian/internal/netx"
 	"koukoukongjian/internal/obs"
 	"koukoukongjian/internal/room"
+	"koukoukongjian/internal/store"
 )
 
 // version 由构建时注入，本地 go run 时保持 unknown。
@@ -42,6 +43,7 @@ func run() error {
 
 		dummyTargets = flag.Int("dummy-targets", 0, "开局摆放的静止靶数量（端到端验证用，0 表示不摆）")
 		waves        = flag.Bool("waves", false, "启用据点波次（M3）；与 -dummy-targets 互斥，互斥裁定在 room.New 内")
+		matchLog     = flag.String("match-log", "", "对局结果落盘路径（JSONL，每局追加一行），空表示不落盘")
 	)
 	flag.Parse()
 
@@ -78,6 +80,32 @@ func run() error {
 	}
 
 	r := room.New(cfg, log, room.Options{ID: "room-1", Seed: s, DummyTargets: *dummyTargets, WavesEnabled: *waves})
+
+	// 对局结果落盘（M7）。落盘不可用不该让服务器起不来：这是日志功能，
+	// 不是启动的硬依赖，降级为不落盘并告警。
+	if *matchLog != "" {
+		mw, err := store.NewWriter(store.WriterOptions{
+			Path: *matchLog,
+			OnError: func(werr error) {
+				log.Warn("对局结果写盘失败", "err", werr)
+			},
+		})
+		if err != nil {
+			log.Warn("对局结果落盘不可用，本次不记录", "path", *matchLog, "err", err)
+		} else {
+			// defer 而不是在退出统计前手动关：Close 要排空队列再刷盘，
+			// 放在最外层 defer 保证"进程里的所有退出路径"都刷过。
+			defer func() {
+				if cerr := mw.Close(); cerr != nil {
+					log.Warn("关闭落盘写入器失败", "err", cerr)
+				} else if d := mw.Dropped(); d > 0 {
+					log.Warn("有对局结果被丢弃（写盘队列满）", "dropped", d)
+				}
+			}()
+			r.SetResultSink(mw)
+			log.Info("对局结果将落盘", "path", *matchLog)
+		}
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
