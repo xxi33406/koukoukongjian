@@ -20,6 +20,9 @@ import (
 )
 
 // Room 是一局游戏。
+// histSnapshotEvery 是 tick 直方图快照的刷新间隔（TickSamples 数）。
+const histSnapshotEvery = 100
+
 type Room struct {
 	ID    string
 	World *world.World
@@ -134,9 +137,23 @@ type Room struct {
 	// bossPhaseSeen 是见过的最高的 Boss 阶段，只用于"阶段切换打一次日志"。
 	//
 	// 不能靠 BossPhase 本身判：阶段是状态（现在几阶段），日志需要的是
-	// 事件（这一 tick 刚变了）。存"见过的最高值"让事件可以从未比较出，
+	// 事件（这一 tick 刚变了）。存"见过的最高值"让事件可以从比较中得出，
 	// 且天然幂等——Boss 死了槽位清零也不会让日志重复。
-	bossPhaseSeen uint8
+	//
+	// 用 atomics 而不是裸 uint8：Boss 阶段只存在于 world（tick goroutine
+	// 独占），测试与将来的运维探针都需要从外部观察它，而"从外部观察"
+	// 唯一安全的形态就是原子。
+	bossPhaseSeen atomic.Uint32
+	// bossSeen 表示本房间刷出过 Boss。同样是给外部观察用的原子镜像：
+	// World.BossSpawned 只在 tick goroutine 里安全。
+	bossSeen atomic.Bool
+	// tickHist 是本房间的 tick 耗时直方图（M7 压测）。
+	//
+	// 只在 tick goroutine 里改。跨 goroutine 的读者（cmd/server 的退出
+	// 路径）走 histSnapshot——不可变快照，每 histSnapshotEvery 个样本刷新。
+	tickHist tickHistogram
+	// histSnapshot 是 tickHist 的不可变快照，供 Metrics() 跨 goroutine 读。
+	histSnapshot atomic.Pointer[tickHistogram]
 	// pendingLevelUps 是本 tick 子步里升了级的玩家，攒到子步循环结束后
 	// 统一处理（发候选 + 开无敌窗口）。
 	//
@@ -403,6 +420,9 @@ func (r *Room) Run(ctx context.Context) {
 		dur := time.Since(start)
 		r.lastTickDur.Store(int64(dur))
 		r.ticksRun.Add(1)
+		// 采样本 tick 耗时。放在 tick() 返回之后而不是内部某个位置：
+		// 要计的是"这个 tick 的全部工作"，包括广播。
+		r.sampleTick(dur)
 
 		// 累加 deadline 而不是 time.Now().Add：让长期平均频率锁定在 tickInterval，
 		// 单次 tick 的抖动不会累积。
@@ -1510,19 +1530,111 @@ func (r *Room) fire() {
 }
 
 // Metrics 返回当前的运行指标。
+// tickHistogram 是 tick 耗时的定长直方图（M7）。
+//
+// 256 个桶、桶宽 1ms、覆盖 0~256ms：tick 预算 50ms，瓶颈诊断只会看
+// 0~100ms 这一段；再长的耗时已经超过预算一个数量级，精度不重要。
+//
+// 为什么不存样本切片：20Hz 跑 25 分钟是 30000 个样本，每样本 8 字节也要
+// 240KB 常驻，而直方图固定 2KB（256 × uint64）且 p99 精度足够。
+// 为什么不只留 max：§11.5 要的是 p99，max 会被一次 GC 尖峰带偏。
+type tickHistogram struct {
+	buckets [256]uint64
+	total   uint64
+}
+
+// observe 记录一次耗时。
+//
+// 超长耗时钳到最后一桶而不是丢弃：丢掉会让 total 与真实 tick 数不符，
+// 而「有多少次慢得超出量程」本身就是压测要看的信号。
+func (h *tickHistogram) observe(d time.Duration) {
+	if d < 0 {
+		d = 0
+	}
+	idx := int(d / time.Millisecond)
+	if idx >= len(h.buckets) {
+		idx = len(h.buckets) - 1
+	}
+	h.buckets[idx]++
+	h.total++
+}
+
+// percentile 返回 p 分位数的桶下界（p ∈ [0,1]，越界会被钳）。
+//
+// 返回桶下界而不是桶内插值：题目问的是「p99 有没有超过 50ms」，桶宽 1ms
+// 的粒度足够判这个，插值只是让数字看起来更精确。
+func (h *tickHistogram) percentile(p float64) time.Duration {
+	if h.total == 0 {
+		return 0
+	}
+	if p < 0 {
+		p = 0
+	}
+	if p > 1 {
+		p = 1
+	}
+	want := uint64(p * float64(h.total))
+	if want == 0 {
+		// total 很小、p 也很小时算出来是 0。不兜底成 1 会让它一路
+		// 落到最后返回的 len-1 桶——单个样本的 p10 会报成 255ms。
+		want = 1
+	}
+	var seen uint64
+	for i, c := range h.buckets {
+		seen += c
+		if seen >= want {
+			return time.Duration(i) * time.Millisecond
+		}
+	}
+	return time.Duration(len(h.buckets)-1) * time.Millisecond
+}
+
 type Metrics struct {
 	Ticks      uint64
 	Overruns   uint64
 	LastTickNs int64
+	// 以下四项是 M7 压测用（§11.5）。硬指标：Overruns==0 且 P99TickNs < 50ms。
+	TickSamples uint64 // 直方图样本数（= 采样过的 tick 数）
+	P50TickNs   int64
+	P99TickNs   int64
+	P100TickNs  int64
 }
 
 // Metrics 读取运行指标，可并发调用。
+//
+// 直方图本体只在 tick goroutine 里改，这里读的是不可变快照（每 100 tick
+// 刷新一次）。直接读 tickHist 会与 tick 循环撞车——与 peers/lastTickDur
+// 的既有纪律一致。
 func (r *Room) Metrics() Metrics {
-	return Metrics{
-		Ticks:      r.ticksRun.Load(),
-		Overruns:   r.overrun.Load(),
-		LastTickNs: r.lastTickDur.Load(),
+	var hist tickHistogram
+	if snap := r.histSnapshot.Load(); snap != nil {
+		hist = *snap
 	}
+	return Metrics{
+		Ticks:       r.ticksRun.Load(),
+		Overruns:    r.overrun.Load(),
+		LastTickNs:  r.lastTickDur.Load(),
+		TickSamples: hist.total,
+		P50TickNs:   int64(hist.percentile(0.50)),
+		P99TickNs:   int64(hist.percentile(0.99)),
+		P100TickNs:  int64(hist.percentile(1.0)),
+	}
+}
+
+// sampleTick 记录一次 tick 耗时，并每 100 tick 刷新一次跨 goroutine 快照。
+//
+// 不每 tick 刷新：atomic.Pointer.Store 每次要分配一个 2KB 结构，20Hz 下
+// 就是每秒 40KB 垃圾，为「退出时看一眼分布」付这个代价不值。5 秒的
+// 分辨率对压测报告足够。
+func (r *Room) sampleTick(d time.Duration) {
+	r.tickHist.observe(d)
+	// 首个样本立即刷新：进程刚起来就报零会让「还没跑够 100 tick」与
+	// 「指标没接上」看起来一样。
+	if r.tickHist.total != 1 && r.tickHist.total%histSnapshotEvery != 0 {
+		return
+	}
+	snap := r.tickHist
+	r.histSnapshot.Store(&snap)
 }
 
 // Seed 返回本房间的随机种子，重放时用它复现。
@@ -1745,6 +1857,7 @@ func (r *Room) spawnBossIfReady() {
 	if !systems.SpawnBoss(r.World) {
 		return
 	}
+	r.bossSeen.Store(true)
 	r.log.Info("Boss 出现",
 		"hub", r.World.BossHub,
 		"hp", r.World.Boss.HP,
@@ -1770,10 +1883,10 @@ func (r *Room) trackBossPhase() {
 		}
 		return true
 	})
-	if phase <= r.bossPhaseSeen {
+	if phase <= uint8(r.bossPhaseSeen.Load()) {
 		return
 	}
-	r.bossPhaseSeen = phase
+	r.bossPhaseSeen.Store(uint32(phase))
 	r.log.Info("Boss 进入二阶段",
 		"phase", phase,
 		"hp_pct", hpPct,

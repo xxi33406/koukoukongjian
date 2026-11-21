@@ -194,6 +194,17 @@ func run() error {
 		"sent", st.SentTotal,
 		"bad", st.RecvBad,
 	)
+	// 压测硬指标（M7 §11.5 拍板决定 #5）：overruns == 0 且 p99 < 50ms。
+	// 单独一行而不是并进上面的"退出统计"：那一行是运维排障用的常规字段，
+	// 这一行是压测报告的取证行，两者生命周期不同（前者每次都看，后者
+	// 只在验收/压测时看），混在一起会让"这行变长了"掩盖"多了新指标"。
+	log.Info("tick 分位",
+		"samples", m.TickSamples,
+		"p50_ms", float64(m.P50TickNs)/1e6,
+		"p99_ms", float64(m.P99TickNs)/1e6,
+		"p100_ms", float64(m.P100TickNs)/1e6,
+		"overruns", m.Overruns,
+	)
 	return nil
 }
 
