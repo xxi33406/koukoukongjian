@@ -1,6 +1,7 @@
 package room
 
 import (
+	"sync"
 	"testing"
 	"time"
 
@@ -9,11 +10,38 @@ import (
 )
 
 // memSink 是测试用的内存 sink，记录房间上报了什么。
+//
+// 必须带锁：reportMatch 在 tick goroutine 的 shutdown 路径里被调用，而
+// 测试在另一个 goroutine 里轮询 reported——裸切片是真实的数据竞争，
+// -race 会报。生产实现（store.Writer）本来就在自己的 goroutine 里串行，
+// 只有测试这个"同步内存实现"需要自己保证可见性。
 type memSink struct {
+	mu       sync.Mutex
 	reported []world.MatchResult
 }
 
-func (m *memSink) Report(rec world.MatchResult) { m.reported = append(m.reported, rec) }
+func (m *memSink) Report(rec world.MatchResult) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.reported = append(m.reported, rec)
+}
+
+// count 返回已上报条数（加锁读）。
+func (m *memSink) count() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.reported)
+}
+
+// at 返回第 i 条上报（加锁读）。越界返回零值。
+func (m *memSink) at(i int) world.MatchResult {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if i < 0 || i >= len(m.reported) {
+		return world.MatchResult{}
+	}
+	return m.reported[i]
+}
 
 // waitForCondition 轮询等待条件成立。20ms 一档，超时报错。
 //
@@ -44,9 +72,9 @@ func TestRoomReportsMatchOnStop(t *testing.T) {
 	r.Stop()
 
 	waitForCondition(t, 3*time.Second, "关房上报结果", func() bool {
-		return len(sink.reported) > 0
+		return sink.count() > 0
 	})
-	if got := sink.reported[0].RoomID; got != "outcome-stop" {
+	if got := sink.at(0).RoomID; got != "outcome-stop" {
 		t.Fatalf("上报 RoomID = %q，期望 outcome-stop", got)
 	}
 }
@@ -72,10 +100,10 @@ func TestRoomReportsSeatNotPoolIndex(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 	r.Stop()
 	waitForCondition(t, 3*time.Second, "关房上报结果", func() bool {
-		return len(sink.reported) > 0
+		return sink.count() > 0
 	})
 
-	rec := sink.reported[0]
+	rec := sink.at(0)
 	if len(rec.Players) != 2 {
 		t.Fatalf("上报玩家行数 = %d，期望 2", len(rec.Players))
 	}
@@ -108,14 +136,14 @@ func TestRoomReportsOnlyOnce(t *testing.T) {
 	r.Stop()
 	r.Stop() // 第二次必须无副作用
 	waitForCondition(t, 3*time.Second, "首次上报", func() bool {
-		return len(sink.reported) == 1
+		return sink.count() == 1
 	})
 
 	// Run 已返回，此刻直接调 reportMatch 不会与 tick goroutine 竞争。
 	r.reportMatch()
 	r.reportMatch()
 
-	if n := len(sink.reported); n != 1 {
+	if n := sink.count(); n != 1 {
 		t.Fatalf("上报次数 = %d，期望 1（reportMatch 必须幂等）", n)
 	}
 }
@@ -139,9 +167,9 @@ func TestRoomOutcomeWipedWhenAllGhost(t *testing.T) {
 	time.Sleep(150 * time.Millisecond)
 	r.Stop()
 	waitForCondition(t, 3*time.Second, "关房上报结果", func() bool {
-		return len(sink.reported) > 0
+		return sink.count() > 0
 	})
-	if got := sink.reported[0].Outcome; got != world.OutcomeWiped {
+	if got := sink.at(0).Outcome; got != world.OutcomeWiped {
 		t.Fatalf("全队鬼魂 Outcome = %v，期望 wiped", got)
 	}
 }
@@ -158,9 +186,9 @@ func TestRoomOutcomeUnknownWithAlivePlayer(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 	r.Stop()
 	waitForCondition(t, 3*time.Second, "关房上报结果", func() bool {
-		return len(sink.reported) > 0
+		return sink.count() > 0
 	})
-	if got := sink.reported[0].Outcome; got != world.OutcomeUnknown {
+	if got := sink.at(0).Outcome; got != world.OutcomeUnknown {
 		t.Fatalf("有活人且据点未清 Outcome = %v，期望 unknown", got)
 	}
 }

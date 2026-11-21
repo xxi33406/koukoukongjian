@@ -121,6 +121,13 @@ type Room struct {
 	// fog.Reveal 返回内部复用切片，必须拷进自己的数组再上快照；
 	// 每 tick 用 [:0] 清空复用，空增量时置 nil 不下发（省带宽）。
 	fogDelta []uint64
+	// fogBits 是 full 帧要带的完整迷雾位图缓存（M7）。
+	//
+	// 缓存而不是每帧现取：2KB 位图拷一次是 memcpy，但每 peer 各拷一次
+	// 就是 4 倍的浪费，而 full 帧本身几十 tick 才出现一次。
+	// 失效时机：本 tick 有增量（说明位图变了）时置 nil。
+	// 只在 tick goroutine 里读写。
+	fogBits []uint64
 	// wavesEnabled 是波次开关的落定值（Options 互斥裁定后的结果）。
 	// Task 10 波次系统接线前只有声明无消费；先落字段，接线时直接读。
 	wavesEnabled bool
@@ -386,6 +393,29 @@ func spawnDummyTargets(w *world.World, n int) {
 
 // ErrAlreadyRunning 表示已有 tick 循环在跑。
 var ErrAlreadyRunning = errors.New("room: tick 循环已在运行")
+
+// revealFog 点灯并把增量攒进 fogDelta（M7 从 tick 里抽出来，为了可单测）。
+//
+// 抽出来的理由：缓存失效与点灯是同一条因果链（有新点亮 → 位图变了 →
+// full 帧缓存作废），拆在两处写迟早有一处漏。抽成方法后测试可以直接
+// 驱动它，不必跨 goroutine 读字段（那会是数据竞争，-race 必报）。
+func (r *Room) revealFog() {
+	if r.fog == nil {
+		r.fogDelta = nil
+		r.fogBits = nil
+		return
+	}
+	r.fogDelta = r.fogDelta[:0]
+	inc := r.fog.Reveal(r.World, r.cfg.Fog.RevealRadius)
+	if len(inc) == 0 {
+		return
+	}
+	for _, idx := range inc {
+		r.fogDelta = append(r.fogDelta, uint64(idx))
+	}
+	// 位图变了，缓存的 full 帧副本作废。
+	r.fogBits = nil
+}
 
 // Run 启动固定步长 tick 循环，阻塞直到 ctx 取消或 Stop 被调用。
 //
@@ -744,16 +774,7 @@ func (r *Room) tick() {
 	//    下一次 Reveal 会覆写它。先算后广播（Reveal 用的是本 tick 子步末
 	//    的玩家位置），顺序固定保证回放一致。空增量置 nil，快照不带
 	//    fog_delta 字段，省一次 varint 长度前缀与带宽。
-	if r.fog != nil {
-		r.fogDelta = r.fogDelta[:0]
-		if inc := r.fog.Reveal(r.World, r.cfg.Fog.RevealRadius); len(inc) > 0 {
-			for _, idx := range inc {
-				r.fogDelta = append(r.fogDelta, uint64(idx))
-			}
-		}
-	} else {
-		r.fogDelta = nil
-	}
+	r.revealFog()
 
 	// 6. 编码快照
 	r.broadcast()

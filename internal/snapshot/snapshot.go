@@ -98,6 +98,12 @@ type Builder struct {
 	// lastFull 是上次全量的 tick，用来触发周期性全量。
 	lastFull uint32
 	haveFull bool
+	// FogBits 是本房间当前的迷雾位图，只在 full 帧用（M7）。
+	//
+	// 由 room 在 Build 之前填：迷雾属于「房间的可视性」而不是「世界的
+	// 模拟状态」，放进 world.World 会让那个包多一个只被快照用的字段。
+	// 传 nil 表示没有迷雾（无图世界）。
+	FogBits []uint64
 }
 
 // NewBuilder 创建一个快照构建器。
@@ -139,6 +145,16 @@ func (b *Builder) Build(w *world.World, selfID world.EntityID, full bool) (*prot
 		// 客户端靠这个标志决定"清空实体表重建"还是"增量合并"。
 		// 此刻 full 已被上面的周期性判定覆写过，正值即本帧全量。
 		Full: full,
+	}
+
+	// full 帧带完整迷雾。full 的定义是"这个 builder 第一次给这个客户端
+	// 出帧"或周期性全量——两种情况下客户端都没有可靠的增量可依赖
+	//（刚连上手里一片黑、或丢包丢到已经不同步）。
+	//
+	// 拷贝而不是直接引用：Build 返回的 snap 会被 Marshal，而 FogBits
+	// 的所有者是 room，下一 tick 的 Reveal 会改它。
+	if full && len(b.FogBits) > 0 {
+		snap.FogFull = append([]uint64(nil), b.FogBits...)
 	}
 
 	// 当前这一帧出现过的实体，用来算 removes。
@@ -376,6 +392,11 @@ func playerSelf(id world.EntityID, p *world.PlayerState) *proto.PlayerSelf {
 		Level:     uint32(p.Level),
 		Exp:       p.Exp,
 		ExpToNext: p.ExpToNext,
+		// 两个技能槽的剩余冷却，1/100 秒。前端画扇形遮罩用。
+		SkillCooldownQ: []uint32{
+			quantizeCooldown(p.SkillCooldown[0]),
+			quantizeCooldown(p.SkillCooldown[1]),
+		},
 	}
 }
 
@@ -518,4 +539,27 @@ func matchOutcomeToProto(o world.MatchOutcome) proto.MatchOutcome {
 	default:
 		return proto.MatchOutcome_MATCH_OUTCOME_UNSPECIFIED
 	}
+}
+
+// cooldownScale 是技能冷却的量化单位（倒数）：1/100 秒。
+const cooldownScale = 100.0
+
+// quantizeCooldown 把秒量化成 1/100 秒的整数。
+//
+// 钳位为什么必须有：冷却可能被技能表配成 1e9 秒（或 NaN 从 TOML 的
+// nan 字面量漏进来——config 的 addNaN 挡了浮点字段，但这不保证所有
+// 来源都过 Validate），而 float64 → uint32 越界在 Go 里是平台相关的
+// 未定义值，不是截断（AGENTS.md §2.6 第一条）。
+//
+// `!(sec > 0)` 而不是 `sec <= 0`：前者同时挡 NaN，后者对 NaN 恒 false
+// 会让 NaN 一路走到下面的乘法。
+func quantizeCooldown(sec float64) uint32 {
+	if !(sec > 0) {
+		return 0
+	}
+	q := sec * cooldownScale
+	if q >= math.MaxUint32 {
+		return math.MaxUint32
+	}
+	return uint32(q + 0.5)
 }

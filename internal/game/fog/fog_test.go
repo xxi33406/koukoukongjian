@@ -90,3 +90,39 @@ func TestGhostRevealsFog(t *testing.T) {
 		t.Fatalf("鬼魂没有点亮任何迷雾格")
 	}
 }
+
+// TestBitsIsCopy 钉住 Bits 返回副本而不是内部切片。
+//
+// 返回引用的话，snapshot.Builder 拿到的那份位图会在下一 tick 的 Reveal
+// 里被改掉——客户端看到的迷雾比实际少一块，且只在玩家移动时出现。
+func TestBitsIsCopy(t *testing.T) {
+	cfg := config.Default()
+	w := world.NewWorld(cfg, 5)
+	f := New(w.Terrain.Width(), w.Terrain.Height())
+	_, p := w.Players.Spawn()
+	p.Pos = world.V(10, 10)
+	p.State = world.PlayerAlive
+	f.Reveal(w, cfg.Fog.RevealRadius)
+
+	first := f.Bits()
+	if len(first) == 0 {
+		t.Fatal("Bits 返回空位图")
+	}
+	// 逐字保存 first 当下的内容：若 Bits 返回的是内部切片，Reveal 会
+	// 把 first 原地改掉，下面的比较就会不等。
+	want := append([]uint64(nil), first...)
+	litBefore := f.LitCount()
+
+	// 走到图的另一头再点亮一片，内部 lit 必然变化。
+	p.Pos = world.V(100, 100)
+	f.Reveal(w, cfg.Fog.RevealRadius)
+	if f.LitCount() == litBefore {
+		t.Fatalf("内部位图没变（LitCount 仍 %d），本用例无法区分副本与引用", litBefore)
+	}
+
+	for i := range want {
+		if first[i] != want[i] {
+			t.Fatalf("先前取到的副本在 Reveal 后被改了：第 %d 字 %#x → %#x", i, want[i], first[i])
+		}
+	}
+}

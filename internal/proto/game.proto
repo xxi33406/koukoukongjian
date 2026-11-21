@@ -127,6 +127,11 @@ message PlayerSelf {
   uint32 level = 10;
   uint32 exp = 11;
   uint32 exp_to_next = 12;
+
+  // 两个技能槽的剩余冷却（M7）。1/100 秒，0 表示可用。
+  // 量化到 1/100 而不是更细：客户端只用它画一个扇形遮罩，10ms 粒度远
+  // 超人眼分辨力，而 uint32 省下的位宽换成每秒重发的一致性收益为零。
+  repeated uint32 skill_cooldown_q = 13;
 }
 
 // SkillChoice 是一个候选技能。
@@ -218,6 +223,12 @@ message Snapshot {
   // 永久留在客户端表里了。全量帧是唯一的自愈机会，但客户端无法从字段
   // 形状上分辨"全量"与"刚好没有变化的增量帧"——两者可以完全同形。
   bool full = 10;
+  // full 帧（full=true）时带完整迷雾位图，每 bit 一格（M7）。
+  //
+  // 只在 full 帧带：增量帧用 fog_delta 就够，每帧重发 2KB 是浪费
+  //（20Hz 下就是 40KB/s）。没有它，客户端重连后整张图回到全黑，
+  // 已探明的区域要重新走一遍。
+  repeated uint64 fog_full = 11;
 }
 
 // EntityDelta 是实体状态。全量时所有字段都填，增量时只填变化的。

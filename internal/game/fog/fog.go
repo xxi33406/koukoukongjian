@@ -93,3 +93,17 @@ func (f *State) Reveal(w *world.World, radius float64) []int {
 	}
 	return f.scratch
 }
+
+// Bits 返回已点亮格的位图副本（M7：full 帧下发用）。
+//
+// 返回副本而不是内部切片：调用方（snapshot.Builder）会把它整块塞进快照，
+// 若返回内部切片，下一 tick 的 Reveal 会在发送过程中改掉它——症状是
+// 客户端看到的迷雾比实际少一块，且只在玩家移动时出现。
+func (f *State) Bits() []uint64 {
+	if f == nil || len(f.lit) == 0 {
+		return nil
+	}
+	out := make([]uint64, len(f.lit))
+	copy(out, f.lit)
+	return out
+}

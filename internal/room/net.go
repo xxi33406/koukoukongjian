@@ -363,6 +363,11 @@ func (r *Room) broadcast() {
 	}
 
 	r.peers.each(func(p *peer) {
+		// full 帧要带完整迷雾位图（M7）：重连/首次连上时客户端手里
+		// 一片黑，光靠 fog_delta 补不回来。只在 full 帧真用得上，但
+		// 赋值本身很便宜（一个切片头）。
+		p.builder.FogBits = r.fogBitsSnapshot()
+
 		snap, _ := p.builder.Build(r.World, p.id, false)
 		snap.AckedInputTick = uint32(p.lastInputSeq)
 		snap.Events = evs // M3 起伤害/击杀事件随帧下发
@@ -414,3 +419,18 @@ func (r *Room) PeerCount() int { return int(r.peerCount.Load()) }
 
 // errNoPeer 表示座位号没有对应玩家（内部与测试用）。
 var errNoPeer = errors.New("room: 没有这个座位")
+
+// fogBitsSnapshot 返回当前迷雾位图（带缓存）。
+//
+// 只在 full 帧真被用到，但 Builder 无法提前知道这一帧会不会被判成全量
+// （周期性全量由 Builder 内部计数决定），所以每帧都赋一次。
+//
+// 缓存的意义：2KB 位图的 memcpy 对 4 个 peer 就是 8KB/tick = 160KB/s，
+// 而 full 帧本身几十 tick 才出现一次。缓存命中时这里只返回同一个切片头。
+// 失效由 Reveal 负责（有增量说明位图变了）。
+func (r *Room) fogBitsSnapshot() []uint64 {
+	if r.fogBits == nil && r.fog != nil {
+		r.fogBits = r.fog.Bits()
+	}
+	return r.fogBits
+}

@@ -785,11 +785,15 @@ type PlayerSelf struct {
 	//   exp         当前等级内已积累的经验，0..exp_to_next-1。
 	//   exp_to_next 升到下一级所需的经验（分母，客户端画进度条用）。
 	//               满级时由曲线给出 0，客户端见到 0 应当画满而不是除零。
-	Level         uint32 `protobuf:"varint,10,opt,name=level,proto3" json:"level,omitempty"`
-	Exp           uint32 `protobuf:"varint,11,opt,name=exp,proto3" json:"exp,omitempty"`
-	ExpToNext     uint32 `protobuf:"varint,12,opt,name=exp_to_next,json=expToNext,proto3" json:"exp_to_next,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Level     uint32 `protobuf:"varint,10,opt,name=level,proto3" json:"level,omitempty"`
+	Exp       uint32 `protobuf:"varint,11,opt,name=exp,proto3" json:"exp,omitempty"`
+	ExpToNext uint32 `protobuf:"varint,12,opt,name=exp_to_next,json=expToNext,proto3" json:"exp_to_next,omitempty"`
+	// 两个技能槽的剩余冷却（M7）。1/100 秒，0 表示可用。
+	// 量化到 1/100 而不是更细：客户端只用它画一个扇形遮罩，10ms 粒度远
+	// 超人眼分辨力，而 uint32 省下的位宽换成每秒重发的一致性收益为零。
+	SkillCooldownQ []uint32 `protobuf:"varint,13,rep,packed,name=skill_cooldown_q,json=skillCooldownQ,proto3" json:"skill_cooldown_q,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *PlayerSelf) Reset() {
@@ -904,6 +908,13 @@ func (x *PlayerSelf) GetExpToNext() uint32 {
 		return x.ExpToNext
 	}
 	return 0
+}
+
+func (x *PlayerSelf) GetSkillCooldownQ() []uint32 {
+	if x != nil {
+		return x.SkillCooldownQ
+	}
+	return nil
 }
 
 // SkillChoice 是一个候选技能。
@@ -1406,7 +1417,13 @@ type Snapshot struct {
 	// 为什么需要显式标志：快照走不可靠 UDP，丢一个 remove 包那条实体就
 	// 永久留在客户端表里了。全量帧是唯一的自愈机会，但客户端无法从字段
 	// 形状上分辨"全量"与"刚好没有变化的增量帧"——两者可以完全同形。
-	Full          bool `protobuf:"varint,10,opt,name=full,proto3" json:"full,omitempty"`
+	Full bool `protobuf:"varint,10,opt,name=full,proto3" json:"full,omitempty"`
+	// full 帧（full=true）时带完整迷雾位图，每 bit 一格（M7）。
+	//
+	// 只在 full 帧带：增量帧用 fog_delta 就够，每帧重发 2KB 是浪费
+	//（20Hz 下就是 40KB/s）。没有它，客户端重连后整张图回到全黑，
+	// 已探明的区域要重新走一遍。
+	FogFull       []uint64 `protobuf:"varint,11,rep,packed,name=fog_full,json=fogFull,proto3" json:"fog_full,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1509,6 +1526,13 @@ func (x *Snapshot) GetFull() bool {
 		return x.Full
 	}
 	return false
+}
+
+func (x *Snapshot) GetFogFull() []uint64 {
+	if x != nil {
+		return x.FogFull
+	}
+	return nil
 }
 
 // EntityDelta 是实体状态。全量时所有字段都填，增量时只填变化的。
@@ -2456,7 +2480,7 @@ const file_internal_proto_game_proto_rawDesc = "" +
 	"\abuttons\x18\x06 \x01(\rR\abuttons\"#\n" +
 	"\x05Vec2Q\x12\f\n" +
 	"\x01x\x18\x01 \x01(\x05R\x01x\x12\f\n" +
-	"\x01y\x18\x02 \x01(\x05R\x01y\"\xaa\x02\n" +
+	"\x01y\x18\x02 \x01(\x05R\x01y\"\xd4\x02\n" +
 	"\n" +
 	"PlayerSelf\x12\x1b\n" +
 	"\tentity_id\x18\x01 \x01(\rR\bentityId\x12\x1e\n" +
@@ -2471,7 +2495,8 @@ const file_internal_proto_game_proto_rawDesc = "" +
 	"\x05level\x18\n" +
 	" \x01(\rR\x05level\x12\x10\n" +
 	"\x03exp\x18\v \x01(\rR\x03exp\x12\x1e\n" +
-	"\vexp_to_next\x18\f \x01(\rR\texpToNext\"<\n" +
+	"\vexp_to_next\x18\f \x01(\rR\texpToNext\x12(\n" +
+	"\x10skill_cooldown_q\x18\r \x03(\rR\x0eskillCooldownQ\"<\n" +
 	"\vSkillChoice\x12\x19\n" +
 	"\bskill_id\x18\x01 \x01(\rR\askillId\x12\x12\n" +
 	"\x04kind\x18\x02 \x01(\rR\x04kind\"u\n" +
@@ -2502,7 +2527,7 @@ const file_internal_proto_game_proto_rawDesc = "" +
 	"\n" +
 	"item_index\x18\x02 \x01(\rR\titemIndex\x12\x1f\n" +
 	"\vtarget_slot\x18\x03 \x01(\rR\n" +
-	"targetSlot\"\xfd\x02\n" +
+	"targetSlot\"\x98\x03\n" +
 	"\bSnapshot\x12\x1f\n" +
 	"\vserver_tick\x18\x01 \x01(\rR\n" +
 	"serverTick\x12(\n" +
@@ -2515,7 +2540,8 @@ const file_internal_proto_game_proto_rawDesc = "" +
 	"\x06events\x18\b \x03(\v2\x10.proto.GameEventR\x06events\x124\n" +
 	"\fremoves_kind\x18\t \x03(\x0e2\x11.proto.EntityKindR\vremovesKind\x12\x12\n" +
 	"\x04full\x18\n" +
-	" \x01(\bR\x04full\"\xc6\x02\n" +
+	" \x01(\bR\x04full\x12\x19\n" +
+	"\bfog_full\x18\v \x03(\x04R\afogFull\"\xc6\x02\n" +
 	"\vEntityDelta\x12\x1b\n" +
 	"\tentity_id\x18\x01 \x01(\rR\bentityId\x12%\n" +
 	"\x04kind\x18\x02 \x01(\x0e2\x11.proto.EntityKindR\x04kind\x12\x1e\n" +
