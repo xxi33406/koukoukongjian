@@ -120,6 +120,25 @@ type World struct {
 	// 分裂/狂暴，而那个包拿不到 room。每 tick 由 systems.UpdatePartySpread
 	// 刷新一次。
 	Spread SpreadLevel
+
+	// BossDead 表示本关 Boss 已被击败（M7）。
+	//
+	// 与 Wiped 同款理由存 World：通关判据是「全部据点清完 + Boss 死」，
+	// 而"Boss 死了没有"必须与 Boss 实体状态同源。另存一个 bool 而不是
+	// 每次扫怪物池找 Boss：Boss 被 Reap 回收后槽位清零，扫池子会得出
+	// "Boss 不存在"——那与"还没刷出来"无法区分，两种状态的通关语义相反。
+	BossDead bool
+
+	// BossSpawned 表示本关 Boss 已经刷出来过。
+	//
+	// 与 BossDead 分开：刷出来之前 BossDead=false 但"Boss 还没打过"，
+	// 刷出来之后仍是 false 但"打过了没死"。room 需要区分这两者才不至于
+	// 在 Boss 刷出的同一 tick 反复尝试生成。
+	BossSpawned bool
+
+	// BossHub 是 Boss 场的据点下标（M7 简化：不新开专属房间）。
+	// -1 表示尚未确定。
+	BossHub int
 }
 
 // NewWorld 依据配置创建一个空世界。
@@ -152,6 +171,10 @@ func NewWorld(cfg *config.Config, seed int64) *World {
 		// 拷进 World 反而让「同一份参数两处存着，改一处不生效」有了空间。
 		Prog: &cfg.Progression,
 	}
+	// BossHub 的两态：-1 表示"还没决定 Boss 在哪个据点"，>=0 是据点下标。
+	// 必须显式初始化——零值 0 恰好是合法下标，不初始化会让 room 以为
+	// Boss 场已经在 0 号据点定好了（"用值推断状态"的经典形态）。
+	w.BossHub = -1
 	// 地图生成不在这里调——mapgen import world，NewWorld 再调 mapgen 会构成
 	// import cycle（Go 不允许）。改为由编排层 internal/room 在 NewWorld 之后
 	// 调 mapgen.Generate：方向 room→mapgen→world，无环。HubCount==0（测试

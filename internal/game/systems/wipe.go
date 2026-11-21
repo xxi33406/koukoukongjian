@@ -21,20 +21,13 @@ func CheckTeamWipe(w *world.World) bool {
 		return false
 	}
 
-	anyAlive := false
-	total := 0
-	w.Players.Each(func(_ world.EntityID, p *world.PlayerState) bool {
-		total++
-		if p.State == world.PlayerAlive {
-			anyAlive = true
-			return false // 已经有人活着，不必再看
-		}
-		return true
-	})
-
-	if total == 0 || anyAlive {
-		// 复活的人让本局重新"未团灭"。放在这里而不是 ReviveTick 里：
-		// 判据与复位的条件必须是同一个（"有人在活着"），写在两处就会分叉。
+	// 判据与"是否已经报过"必须同源（M5 注释），而判据本身在 M7 抽到
+	// teamAllGhosted 供 CheckOutcome 只读复用——两处各写一份遍历，
+	// 将来判据改了（比如把 PlayerDisconnected 排除）会只改到一半。
+	if !teamAllGhosted(w) {
+		// 有活人（或空房间）：复位，下一轮团灭还会再报。
+		// 放在这里而不是 ReviveTick 里：判据与复位的条件必须是同一个
+		// （"有人在活着"），写在两处就会分叉。
 		w.Wiped = false
 		return false
 	}
