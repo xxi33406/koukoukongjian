@@ -139,6 +139,33 @@ type World struct {
 	// BossHub 是 Boss 场的据点下标（M7 简化：不新开专属房间）。
 	// -1 表示尚未确定。
 	BossHub int
+
+	// Boss 是 Boss 参数快照（M7，与 Mon/Wav/Prog 同款：只存 cfg 里的
+	// 参数块指针，不持有整个 cfg）。
+	//
+	// nil 表示本关没有 Boss（无图世界、或配置里 HP=0）。所有 Boss
+	// 相关系统必须短路——与 Mon 的短路约定同源。
+	Boss *config.Boss
+}
+
+// HasBoss 报告怪物池里是否还有活着的 Boss（M7）。
+//
+// 扫池子而不是查 World.BossDead：这个函数回答的是"现在还有没有 Boss
+// 要打"，而 BossDead 回答的是"打过了没有"。Boss 被 Reap 回收后槽位
+// 清零，此时两者都是 false 但语义不同（前者=打完了，后者=没刷过）——
+// 混用会让"Boss 打完了"被当成"Boss 还没刷"。
+//
+// 20Hz × 80 怪物槽位 → 每秒 1600 次遍历，每次只看一个位，可忽略。
+func (w *World) HasBoss() bool {
+	found := false
+	w.Monsters.Each(func(_ EntityID, m *MonsterState) bool {
+		if m.Flags.Has(MonsterFlagBoss) && !m.IsDead() {
+			found = true
+			return false
+		}
+		return true
+	})
+	return found
 }
 
 // NewWorld 依据配置创建一个空世界。
@@ -175,6 +202,10 @@ func NewWorld(cfg *config.Config, seed int64) *World {
 	// 必须显式初始化——零值 0 恰好是合法下标，不初始化会让 room 以为
 	// Boss 场已经在 0 号据点定好了（"用值推断状态"的经典形态）。
 	w.BossHub = -1
+	// Boss 装配：HP=0 表示本关无 Boss（合法的"没做完"状态）。
+	if cfg.Boss.HP > 0 {
+		w.Boss = &cfg.Boss
+	}
 	// 地图生成不在这里调——mapgen import world，NewWorld 再调 mapgen 会构成
 	// import cycle（Go 不允许）。改为由编排层 internal/room 在 NewWorld 之后
 	// 调 mapgen.Generate：方向 room→mapgen→world，无环。HubCount==0（测试

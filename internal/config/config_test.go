@@ -442,3 +442,40 @@ func TestValidateAcceptsFastChaseDistAboveSight(t *testing.T) {
 		t.Errorf("FastChaseDist 大于视野应通过 Validate，却报错：%v", err)
 	}
 }
+
+func TestValidateBossSentinelAndFields(t *testing.T) {
+	// HP == 0 是"本关无 Boss"哨兵：合法，且其余字段一律不校验
+	// （关掉 Boss 的配置里留着旧数值是运维常态）。
+	c := Default()
+	c.Boss = Boss{HP: 0, Speed: -5, Radius: -1, FireVulnMul: 0.1}
+	if err := c.Validate(); err != nil {
+		t.Errorf("Boss.HP = 0 哨兵应通过 Validate，却报错：%v", err)
+	}
+
+	cases := []struct {
+		name string
+		mut  func(*Config)
+	}{
+		{"HP 为负", func(c *Config) { c.Boss.HP = -1 }},
+		{"速度为零", func(c *Config) { c.Boss.Speed = 0 }},
+		{"速度过大", func(c *Config) { c.Boss.Speed = 100 }},
+		{"速度为 NaN", func(c *Config) { c.Boss.Speed = math.NaN() }},
+		{"伤害为负", func(c *Config) { c.Boss.AttackDamage = -1 }},
+		{"攻击距离为零", func(c *Config) { c.Boss.AttackRange = 0 }},
+		{"半径过大", func(c *Config) { c.Boss.Radius = 9 }},
+		// Phase2AtPct 是开区间：0 与 1 都不构成"二阶段"。
+		{"阶段阈值为零", func(c *Config) { c.Boss.Phase2AtPct = 0 }},
+		{"阶段阈值为一", func(c *Config) { c.Boss.Phase2AtPct = 1 }},
+		{"二阶段速度不足一", func(c *Config) { c.Boss.Phase2SpeedMul = 0.9 }},
+		{"二阶段过强", func(c *Config) { c.Boss.Phase2DamageMul = 6 }},
+		{"易伤倍率小于一", func(c *Config) { c.Boss.FireVulnMul = 0.9 }},
+		{"召唤数过大", func(c *Config) { c.Boss.SummonPerPhase2 = 17 }},
+	}
+	for _, tc := range cases {
+		c := Default()
+		tc.mut(c)
+		if err := c.Validate(); err == nil {
+			t.Errorf("%s：Validate 应报错，却返回 nil", tc.name)
+		}
+	}
+}

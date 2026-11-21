@@ -326,6 +326,16 @@ type MonsterState struct {
 	Flags     MonsterFlags
 	PoisonRem float64 // 位置死亡技能的"强化"累计值（spec L131）
 
+	// BossPhase 是 Boss 的阶段（M7，0 表示非 Boss 或未初始化）。
+	//
+	// 只在 MonsterFlagBoss 为真时非零。存 MonsterState 而不是另开
+	// BossState 池：Boss 与怪物在"有血量、被子弹打、被 AI 驱动、被
+	// Reap 回收"上完全一致，另开池意味着 Collide/aim/reap/ai/snapshot
+	// 每个遍历点都要加一遍。
+	BossPhase uint8
+	// BossSummoned 表示 Boss 已经召唤过二阶段小怪（只召唤一次）。
+	BossSummoned bool
+
 	// M3：仇恨打分的三路输入（回放一致性：只在 tick 循环内读写）。
 	// 数组长度是 5 不是 MaxPlayers(4)：pool.Spawn 在 free 栈耗尽后只要
 	// live<max 就 append 新槽（pool.go），NewPool(max,max) 的槽位下标
@@ -373,6 +383,14 @@ const (
 	// 更糟的是"能不能复活"会由治疗量顺手决定，而那是设计要单独拍板的事。
 	// 把状态写成显式位，值与状态各走各的路：治疗只管 HP，复活只管清标志。
 	MonsterFlagDead
+
+	// MonsterFlagBoss 标记这是 Boss（M7）。
+	//
+	// 加在末尾而不是插在 MonsterFlagDead 之前：这些位会被 uint8 序列化
+	// 进快照（snapshot.go 的 monsterKey），跑在客户端上的 Unity 侧也按位
+	// 判断。插队会让已在用的位全部平移，客户端版本一旦不同就会把"狂暴"
+	// 读成"Boss"。追加只增加新位，老客户端读到未知位时按 0 处理。
+	MonsterFlagBoss
 )
 
 // Has 报告标记位是否置位。

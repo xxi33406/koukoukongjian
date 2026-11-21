@@ -29,6 +29,8 @@ type Config struct {
 	Monster Monster `toml:"monster"`
 	// Progression 是升级曲线参数（M4）。字段名与 TOML 键一一对应。
 	Progression Progression `toml:"progression"`
+	// Boss 是 Boss 参数（M7）。HP=0 表示本关无 Boss。
+	Boss Boss `toml:"boss"`
 	// Ghost 是死亡与复活相关参数（M5）。
 	Ghost Ghost `toml:"ghost"`
 	Log   Log   `toml:"log"`
@@ -100,6 +102,29 @@ type Waves struct {
 	WavesPerHub     int     `toml:"waves_per_hub"`      // 每据点波数（spec：单关 5~8 波，灰盒先 3）
 	MonstersPerWave int     `toml:"monsters_per_wave"`  // 每波怪数
 	InterWaveDelayS float64 `toml:"inter_wave_delay_s"` // 清波到下一波的间隔（秒）
+}
+
+// Boss 是 Boss 参数（M7）。spec L96：Boss1 两阶段，元素协同弱点。
+//
+// 只有一组而不是按关配：v0.1 只有一关一个 Boss（第二关延后，spec L155）。
+//
+// HP == 0 是"本关没有 Boss"的哨兵（合法的"没做完"状态，测试世界与
+// 无图世界都靠它短路）。这与 map.hub_count == 0 关地图是同一套约定。
+type Boss struct {
+	HP           float64 `toml:"hp"`            // 血量
+	Speed        float64 `toml:"speed"`         // 一阶段速度（米/秒）
+	AttackDamage float64 `toml:"attack_damage"` // 单次伤害
+	AttackRange  float64 `toml:"attack_range"`  // 攻击距离（米）
+	Radius       float64 `toml:"radius"`        // 碰撞半径（米）
+	// Phase2AtPct 是进入二阶段的血量百分比（0.5 = 半血）。
+	Phase2AtPct float64 `toml:"phase2_at_pct"`
+	// Phase2SpeedMul / Phase2DamageMul 是二阶段的强化倍率。
+	Phase2SpeedMul  float64 `toml:"phase2_speed_mul"`
+	Phase2DamageMul float64 `toml:"phase2_damage_mul"`
+	// FireVulnMul 是火元素易伤倍率（spec L73「Boss 对火易伤」）。
+	FireVulnMul float64 `toml:"fire_vuln_mul"`
+	// SummonPerPhase2 是二阶段召唤的小怪数量。
+	SummonPerPhase2 int `toml:"summon_per_phase2"`
 }
 
 // Monster 是怪物数值（M3）。spec 拍板：怪物 50 血 10 攻。
@@ -196,6 +221,18 @@ func Default() *Config {
 			WavesPerHub:     3,
 			MonstersPerWave: 4,
 			InterWaveDelayS: 1.0,
+		},
+		Boss: Boss{
+			HP:              800,
+			Speed:           2.0,
+			AttackDamage:    20,
+			AttackRange:     1.8,
+			Radius:          0.9,
+			Phase2AtPct:     0.5,
+			Phase2SpeedMul:  1.2,
+			Phase2DamageMul: 1.4,
+			FireVulnMul:     1.5,
+			SummonPerPhase2: 2,
 		},
 		Monster: Monster{
 			Speed:           2.5,
@@ -381,6 +418,51 @@ func (c *Config) Validate() error {
 	}
 	if c.Waves.InterWaveDelayS < 0 || c.Waves.InterWaveDelayS > 60 {
 		add("waves.inter_wave_delay_s = %v，必须在 0..60", c.Waves.InterWaveDelayS)
+	}
+
+	// Boss（M7）。HP == 0 是"本关无 Boss"哨兵，合法；负数非法。
+	// 其余字段只在 HP > 0 时才有意义——关掉 Boss 的配置里留着旧数值
+	// 是运维常态，不该因此拒绝启动。
+	if c.Boss.HP < 0 {
+		add("boss.hp = %v，不能为负（0 = 本关无 Boss）", c.Boss.HP)
+	}
+	if c.Boss.HP > 0 {
+		addNaN("boss.hp", c.Boss.HP)
+		addNaN("boss.speed", c.Boss.Speed)
+		addNaN("boss.attack_damage", c.Boss.AttackDamage)
+		addNaN("boss.attack_range", c.Boss.AttackRange)
+		addNaN("boss.radius", c.Boss.Radius)
+		addNaN("boss.phase2_at_pct", c.Boss.Phase2AtPct)
+		addNaN("boss.phase2_speed_mul", c.Boss.Phase2SpeedMul)
+		addNaN("boss.phase2_damage_mul", c.Boss.Phase2DamageMul)
+		addNaN("boss.fire_vuln_mul", c.Boss.FireVulnMul)
+		if c.Boss.Speed <= 0 || c.Boss.Speed > 20 {
+			add("boss.speed = %v，必须在 (0, 20]", c.Boss.Speed)
+		}
+		if c.Boss.AttackDamage < 0 {
+			add("boss.attack_damage = %v，不能为负", c.Boss.AttackDamage)
+		}
+		if c.Boss.AttackRange <= 0 || c.Boss.AttackRange > 10 {
+			add("boss.attack_range = %v，必须在 (0, 10]", c.Boss.AttackRange)
+		}
+		if c.Boss.Radius <= 0 || c.Boss.Radius > 4 {
+			add("boss.radius = %v，必须在 (0, 4]", c.Boss.Radius)
+		}
+		if c.Boss.Phase2AtPct <= 0 || c.Boss.Phase2AtPct >= 1 {
+			add("boss.phase2_at_pct = %v，必须在 (0, 1) 之间（开区间：0 与 1 都不构成二阶段）", c.Boss.Phase2AtPct)
+		}
+		if c.Boss.Phase2SpeedMul < 1 || c.Boss.Phase2SpeedMul > 5 {
+			add("boss.phase2_speed_mul = %v，必须在 [1, 5]（二阶段不该比一阶段慢）", c.Boss.Phase2SpeedMul)
+		}
+		if c.Boss.Phase2DamageMul < 1 || c.Boss.Phase2DamageMul > 5 {
+			add("boss.phase2_damage_mul = %v，必须在 [1, 5]（二阶段不该比一阶段弱）", c.Boss.Phase2DamageMul)
+		}
+		if c.Boss.FireVulnMul < 1 || c.Boss.FireVulnMul > 10 {
+			add("boss.fire_vuln_mul = %v，必须在 [1, 10]（易伤倍率小于 1 变成抗性）", c.Boss.FireVulnMul)
+		}
+		if c.Boss.SummonPerPhase2 < 0 || c.Boss.SummonPerPhase2 > 16 {
+			add("boss.summon_per_phase2 = %d，必须在 0..16", c.Boss.SummonPerPhase2)
+		}
 	}
 
 	if c.Monster.Speed < 0 || c.Monster.Speed > 20 {

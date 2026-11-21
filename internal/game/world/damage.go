@@ -83,6 +83,12 @@ func (w *World) ResolveDamage(src, dst EntityID, dstClass EntityClass, base floa
 			// 用值推断会让"打死"和"血少"撞在同一个表示上。
 			m.Flags |= MonsterFlagDead
 			ev.IsKill = true
+			// Boss 死了要置 World.BossDead（M7）：通关判据
+			// （systems.CheckOutcome）读它，而 Boss 实体稍后会被 Reap
+			// 回收、槽位清零，之后无法从池子里判断"Boss 打过没有"。
+			if m.Flags.Has(MonsterFlagBoss) {
+				w.BossDead = true
+			}
 			// 战绩记账（M7）。放在置标志之后、creditSource 之前：
 			// 两者读的都是 srcP，一次 Get 拿到的指针就够了，但分开写
 			// 是因为 creditSource 还被别的路径调用（它只管贡献）。
