@@ -207,6 +207,10 @@ func chaseSpeed(w *world.World, m *world.MonsterState, dist float64) float64 {
 	// 而 w.Spread 是「全队现在什么状态」——两者在 ApplySpreadToMonsters
 	// 之后一对一，但读标志位让 AI 不依赖「ApplySpreadToMonsters 是否
 	// 被调过」这个隐式前提。
+	//
+	// 这个位被两处复用：距离惩罚第二级（队伍走散）与 Boss 二阶段
+	// （见 systems.BossPhase2Flag 的注释）。复用让引擎里只有一个"加速
+	// 加伤"的真相，代价是两者无法单独调参。
 	if m.Flags.Has(world.MonsterFlagEnraged) {
 		speed *= enragedSpeedMul
 	}

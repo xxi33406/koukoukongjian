@@ -131,6 +131,12 @@ type Room struct {
 	// 为空、recordHubStates 按当前据点数量重建；全零值天然等于 HubIdle，
 	// 正好是据点初始态，不需要"首 tick 特判"。
 	hubStates []world.HubState
+	// bossPhaseSeen 是见过的最高的 Boss 阶段，只用于"阶段切换打一次日志"。
+	//
+	// 不能靠 BossPhase 本身判：阶段是状态（现在几阶段），日志需要的是
+	// 事件（这一 tick 刚变了）。存"见过的最高值"让事件可以从未比较出，
+	// 且天然幂等——Boss 死了槽位清零也不会让日志重复。
+	bossPhaseSeen uint8
 	// pendingLevelUps 是本 tick 子步里升了级的玩家，攒到子步循环结束后
 	// 统一处理（发候选 + 开无敌窗口）。
 	//
@@ -623,6 +629,18 @@ func (r *Room) tick() {
 		// 刚分到的那笔钱，否则「买得起」的东西显示成买不起。
 		r.updateShopOpen()
 		r.updateShopClose()
+		// Boss 刷新也挂在波次进度上：spec L94「每关 5~8 波 + Boss」，
+		// 没有波次就没有「全部据点清完」这个状态。
+		r.spawnBossIfReady()
+	}
+
+	// 1.7 Boss 阶段推进：必须在 AI 之前——AI 的 chaseSpeed 与攻击 switch
+	//     读 MonsterFlagEnraged 决定速度与伤害，晚于 AI 会让切换那一 tick
+	//     白跑（Boss 已经该加速了却按一阶段速度走了 50ms）。
+	//     也必须在 UpdateWaves 之后：Boss 只可能在据点清完后才存在。
+	if r.wavesEnabled {
+		systems.UpdateBossPhase(r.World)
+		r.trackBossPhase()
 	}
 
 	// 2. AI 决策（M3 Task 10）：每 tick 一次，循环放在子步循环之外、
@@ -1714,6 +1732,52 @@ func (r *Room) updateShopClose() {
 		})
 		r.log.Info("商店关闭", "hub", i)
 	}
+}
+
+// spawnBossIfReady 在全部据点清完后刷 Boss，并打一次日志。
+//
+// 只在 wavesEnabled 时调用：Boss 依附于波次进度（spec L94「每关 5~8 波 +
+// Boss」），没有波次就没有「清完据点」这个状态。
+func (r *Room) spawnBossIfReady() {
+	if r.World.Boss == nil || r.World.BossSpawned {
+		return
+	}
+	if !systems.SpawnBoss(r.World) {
+		return
+	}
+	r.log.Info("Boss 出现",
+		"hub", r.World.BossHub,
+		"hp", r.World.Boss.HP,
+		"tick", r.World.Tick)
+}
+
+// trackBossPhase 在 Boss 进入二阶段时打一次日志。
+//
+// systems 包不依赖 slog（它是纯模拟层），所以阶段切换的留痕落在 room：
+// 每 tick 比对一次「现在的阶段」与「见过的最高阶段」。验收与压测都靠这行
+// 日志确认「真的进过二阶段」——没有它，一个从不换阶段的 Boss 与一个
+// 换得很晚的 Boss 从外部完全无法区分。
+func (r *Room) trackBossPhase() {
+	phase := uint8(0)
+	var hpPct float64
+	r.World.Monsters.Each(func(_ world.EntityID, m *world.MonsterState) bool {
+		if m.Flags.Has(world.MonsterFlagBoss) && !m.IsDead() {
+			phase = m.BossPhase
+			if m.MaxHP > 0 {
+				hpPct = m.HP / m.MaxHP
+			}
+			return false
+		}
+		return true
+	})
+	if phase <= r.bossPhaseSeen {
+		return
+	}
+	r.bossPhaseSeen = phase
+	r.log.Info("Boss 进入二阶段",
+		"phase", phase,
+		"hp_pct", hpPct,
+		"tick", r.World.Tick)
 }
 
 // anyAliveNear 报告区域内是否有活着的玩家。
