@@ -1904,7 +1904,10 @@ func (r *Room) trackBossPhase() {
 		}
 		return true
 	})
-	if phase <= uint8(r.bossPhaseSeen.Load()) {
+	// phase < 2 也要挡住：bossPhaseSeen 初值是 0，而 Boss 刷出来时
+	// phase=1——只判 `<=` 会让刷出那一 tick 就打「进入二阶段」
+	//（实测日志里确实出现过 phase=1 hp_pct=1 的假二阶段）。
+	if phase < 2 || phase <= uint8(r.bossPhaseSeen.Load()) {
 		return
 	}
 	r.bossPhaseSeen.Store(uint32(phase))

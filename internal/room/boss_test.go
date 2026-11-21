@@ -126,3 +126,30 @@ func TestRoomNoBossWithoutConfig(t *testing.T) {
 		t.Fatalf("bossPhaseSeen = %d，期望 0", got)
 	}
 }
+
+// TestTrackBossPhaseDoesNotLogOnSpawn 钉住「刷出那一 tick 不算二阶段」。
+//
+// bossPhaseSeen 初值 0，而 Boss 刷出来时就带 BossPhase=1。只判
+// `phase <= seen` 会让刷出那一 tick 就打一行「Boss 进入二阶段」——
+// 实测端到端日志里出现过 phase=1 hp_pct=1 的假二阶段。
+func TestTrackBossPhaseDoesNotLogOnSpawn(t *testing.T) {
+	r, _ := startRoomWithOpts(t, "boss-nophase",
+		Options{ID: "boss-nophase", Seed: 11, WavesEnabled: true},
+		func(r *Room) {
+			r.World.Boss = testBossConfig()
+			for i := range r.World.Hubs {
+				r.World.Hubs[i].State = world.HubCleared
+			}
+		})
+
+	waitForCondition(t, 3*time.Second, "tick 循环刷出 Boss", func() bool {
+		return r.bossSeen.Load()
+	})
+	// 刷出之后再跑几 tick，让 trackBossPhase 充分执行。
+	time.Sleep(150 * time.Millisecond)
+	// 断言 seen 仍是 0：只要 trackBossPhase 把 phase=1 当成「换阶段」
+	// 记下，seen 就会变成 1，刷出那一 tick 会多打一行假日志。
+	if seen := r.bossPhaseSeen.Load(); seen != 0 {
+		t.Fatalf("刷出时 bossPhaseSeen = %d，期望 0——刷出那一 tick 被当成了阶段切换", seen)
+	}
+}
