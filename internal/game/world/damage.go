@@ -74,6 +74,23 @@ func (w *World) ResolveDamage(src, dst EntityID, dstClass EntityClass, base floa
 			// 重复产出，分账算两次。
 			return ev
 		}
+		// Boss 火元素易伤（spec L73，M7）。
+		//
+		// 乘在这里而不是让调用方乘：易伤是"这个目标这份元素"的属性，
+		// 与伤害来源无关——子弹、元素技能、区域效果都要吃。让每个来源
+		// 自己乘，M6 加新来源时必漏一处，症状是"某个技能打 Boss 没加成"。
+		//
+		// 只放大不缩小：FireVulnMul <= 1 视为没配（易伤语义上不该减伤），
+		// 否则配置写错 0.5 会变成"Boss 抗火"，与词条名相反且没人会想到
+		// 去查这里。减伤将来走 DamageTags/护甲那一路。
+		//
+		// 改 dmg 而不是只改扣血量：ev.Amount 与 creditSource 都用 dmg，
+		// 只改扣血会让血量变了但事件与分账没变——玩家看到 Boss 掉血更快，
+		// 结算面板却显示原来的贡献。
+		if el == ElementFire && m.Flags.Has(MonsterFlagBoss) &&
+			w.Boss != nil && w.Boss.FireVulnMul > 1 {
+			dmg *= w.Boss.FireVulnMul
+		}
 		m.HP -= dmg
 		if m.HP <= 0 {
 			// 钳到 0：允许为负会让客户端血条算出负宽度。
