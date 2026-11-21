@@ -90,6 +90,15 @@ type PlayerState struct {
 	Deaths       uint32
 	ReflectKills uint32
 
+	// TotalDamage / TotalDamageTaken 是**整局**累计（M7）。
+	//
+	// 与上面三个同类的战绩字段，但必须与 Contribute/DamageTaken 分开：
+	// 那两个是**据点级**的，SettleHub 每清一个据点就清零（spec L79
+	// 「每据点重新计算」）。拿它们算整局战报，会让"最后一个据点没杀人"
+	// 的玩家在结算页显示 0 伤害——单据点测试看不出来，多据点必现。
+	TotalDamage      float64
+	TotalDamageTaken float64
+
 	// —— 成长（M4）——
 	//
 	// Level 从 1 起。但要注意 Pool.Spawn 会 `var zero T` 把整个槽位清零

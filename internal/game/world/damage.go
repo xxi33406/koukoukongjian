@@ -136,6 +136,8 @@ func (w *World) resolvePlayerDamage(ev DamageEvent, src, dst EntityID, dmg float
 	p.HP -= dmg
 	// 承受伤害参与贡献折算（spec L134：贡献 = 伤害 + 0.5×承受）
 	p.DamageTaken += dmg
+	// 整局累计（M7）：DamageTaken 被 SettleHub 每据点清零。
+	p.TotalDamageTaken += dmg
 
 	// 受击打断开背包引导（spec L44「开背包需数秒引导，受击打断」）。
 	//
@@ -180,6 +182,9 @@ func (w *World) resolvePlayerDamage(ev DamageEvent, src, dst EntityID, dmg float
 func creditSource(w *World, src EntityID, dmg float64) {
 	if srcP := w.Players.Get(src); srcP != nil {
 		srcP.Contribute += dmg
+		// 整局累计单独记一笔（M7）：Contribute 会被 SettleHub 每据点
+		// 清零，而结算页要的是整局总数。
+		srcP.TotalDamage += dmg
 	}
 }
 
